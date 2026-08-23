@@ -1,0 +1,27 @@
+{
+  "name": "sentinel-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sentinel — AI-powered software development agent",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "start": "node apps/cli/dist/index.js",
+    "dev": "pnpm --filter @sentinel/cli run dev",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "pnpm -r run clean"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@10.14.0",
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@sentinel/project",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@sentinel/core": "workspace:*",
+    "@sentinel/storage": "workspace:*",
+    "@sentinel/git": "workspace:*",
+    "fast-glob": "^3.3.3",
+    "ignore": "^7.0.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "rimraf": "^6.0.1"
+  }
+}
