@@ -13,7 +13,7 @@ import type {
 } from '@sentinel/core';
 import { updateSettings, resetSettings } from '@sentinel/core';
 import { createProvider, type LLMProvider } from '@sentinel/llm';
-import type { AgentKernel, AgentSession } from '@sentinel/agent';
+import type { AgentKernel, AgentSession, SessionManager } from '@sentinel/agent';
 import type { PermissionCheck } from '@sentinel/permissions';
 import { Header } from './components/Header.js';
 import { MessageList, type DisplayMessage } from './components/MessageList.js';
@@ -27,21 +27,44 @@ interface AppProps {
   projectInfo: ProjectInfo;
   kernel: AgentKernel;
   session: AgentSession;
+  sessionManager?: SessionManager;
   resolvedConfig: ResolvedConfig;
   initialProviderName: string;
   initialModelId: string;
+  initialMessage?: string;
 }
 
 export const App: React.FC<AppProps> = ({
   projectInfo,
   kernel,
   session,
+  sessionManager,
   resolvedConfig,
   initialProviderName,
   initialModelId,
+  initialMessage,
 }) => {
   const { exit } = useApp();
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [messages, setMessages] = useState<DisplayMessage[]>(() => {
+    const list: DisplayMessage[] = [];
+    if (initialMessage) {
+      list.push({
+        id: `init-${Date.now()}`,
+        role: 'system',
+        content: initialMessage,
+      });
+    }
+    // Load historical messages from resumed session if any
+    for (const msg of session.getMessages()) {
+      list.push({
+        id: `hist-${msg.timestamp.getTime()}-${Math.random().toString(36).slice(2, 6)}`,
+        role: msg.role === 'tool' ? 'system' : msg.role,
+        content: msg.content,
+      });
+    }
+    return list;
+  });
+
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [streamingChunk, setStreamingChunk] = useState<string>('');
   const [isBusy, setIsBusy] = useState<boolean>(false);
@@ -60,6 +83,14 @@ export const App: React.FC<AppProps> = ({
     });
 
     const unsubToolStart = kernel.eventBus.on('tool_started', (e: ToolStartedEvent) => {
+      // Record modified files if tool wrote or patched
+      if (['write_file', 'patch_file'].includes(e.toolName)) {
+        const inputObj = e.input as Record<string, unknown>;
+        if (typeof inputObj?.['filePath'] === 'string') {
+          session.recordModifiedFile(inputObj['filePath']);
+        }
+      }
+
       setActivities((prev) => [
         ...prev,
         {
@@ -89,7 +120,7 @@ export const App: React.FC<AppProps> = ({
       unsubToolStart();
       unsubToolEnd();
     };
-  }, [kernel]);
+  }, [kernel, session]);
 
   const handleModelChange = async (newModelId: string) => {
     setMode('chat');
@@ -122,6 +153,12 @@ export const App: React.FC<AppProps> = ({
 
       setCurrentModelId(newModelId);
       setProviderName(newProvider.name);
+      session.modelId = newModelId;
+      session.providerName = newProvider.name;
+
+      if (sessionManager) {
+        await sessionManager.saveSession(session);
+      }
 
       setMessages((prev) => [
         ...prev,
@@ -154,7 +191,7 @@ export const App: React.FC<AppProps> = ({
           role: 'system',
           content:
             '✓ All Sentinel configuration and credentials have been reset to defaults.\n' +
-            'Settings file ~/.sentinel/settings.json removed. Restart Sentinel to run the setup wizard again.',
+            'Settings file ~/sentinel/config/settings.json removed. Restart Sentinel to run the setup wizard again.',
         },
       ]);
     } catch (err) {
@@ -179,7 +216,13 @@ export const App: React.FC<AppProps> = ({
         setMessages([]);
         session.clear();
       },
-      exitApp: () => exit(),
+      exitApp: async () => {
+        session.setStatus('completed');
+        if (sessionManager) {
+          await sessionManager.saveSession(session);
+        }
+        exit();
+      },
       openModelSelector: () => setMode('model_select'),
       resetConfig: handleReset,
     });
@@ -212,13 +255,31 @@ export const App: React.FC<AppProps> = ({
     setStreamingChunk('');
 
     try {
+      if (!session.taskSummary) {
+        session.setTaskSummary(input.slice(0, 80));
+      }
+
       const result = await kernel.run(input, session, { autoVerify: true });
       const assistantMsgId = `asst-${Date.now()}`;
+
+      // Checkpoint step
+      session.createCheckpoint(`Completed step: ${input.slice(0, 50)}`);
+
+      // Persist session to SQLite
+      if (sessionManager) {
+        await sessionManager.saveSession(session);
+      }
+
       setMessages((prev) => [
         ...prev,
         { id: assistantMsgId, role: 'assistant', content: result.finalResponse },
       ]);
     } catch (err) {
+      session.setStatus('interrupted');
+      if (sessionManager) {
+        await sessionManager.saveSession(session);
+      }
+
       setMessages((prev) => [
         ...prev,
         {

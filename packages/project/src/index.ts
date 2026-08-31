@@ -3,6 +3,7 @@
  *
  * Scans, indexes, and analyzes project files and architecture.
  * Extracts structural intelligence (functions, classes, interfaces, imports/exports, endpoints).
+ * Provides project root detection and persistent project identity.
  */
 
 export type {
@@ -16,3 +17,5 @@ export type {
 export { ProjectIndexer } from './indexer.js';
 export { detectProjectStack } from './detectors.js';
 export { StructuralAnalyzer } from './structural-analyzer.js';
+export { ProjectDetector } from './detector.js';
+export { ProjectIdentityService } from './identity.js';

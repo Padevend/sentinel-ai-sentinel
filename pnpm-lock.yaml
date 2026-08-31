@@ -99,6 +99,9 @@ importers:
       '@sentinel/permissions':
         specifier: workspace:*
         version: link:../permissions
+      '@sentinel/storage':
+        specifier: workspace:*
+        version: link:../storage
       '@sentinel/tools':
         specifier: workspace:*
         version: link:../tools

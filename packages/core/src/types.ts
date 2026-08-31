@@ -14,8 +14,26 @@ export type ToolCallId = string & { readonly __brand: 'ToolCallId' };
 /** Unique identifier for an agent session. */
 export type SessionId = string & { readonly __brand: 'SessionId' };
 
+/** Unique identifier for a project. */
+export type ProjectId = string & { readonly __brand: 'ProjectId' };
+
+/** Unique identifier for a workspace. */
+export type WorkspaceId = string & { readonly __brand: 'WorkspaceId' };
+
 /** Absolute filesystem path, validated at boundaries. */
 export type AbsolutePath = string & { readonly __brand: 'AbsolutePath' };
+
+// ─── Runtime & Platform Paths ────────────────────────────────────
+
+export interface SentinelPaths {
+  readonly rootDir: string;
+  readonly configDir: string;
+  readonly dataDir: string;
+  readonly cacheDir: string;
+  readonly logsDir: string;
+}
+
+export type PlatformType = 'windows' | 'linux' | 'darwin' | 'unknown';
 
 // ─── Agent State ─────────────────────────────────────────────────
 
@@ -104,7 +122,30 @@ export type FinishReason = 'stop' | 'tool_calls' | 'length' | 'content_filter' |
  */
 export type PermissionLevel = 'safe' | 'confirm_recommended' | 'confirm_required';
 
-// ─── Project Types ───────────────────────────────────────────────
+// ─── Project & Workspace Types ───────────────────────────────────
+
+export interface ProjectRoot {
+  readonly path: string;
+  readonly detectionMethod: 'git' | 'workspace' | 'manifest' | 'cwd';
+  readonly confidence: number;
+}
+
+export interface ProjectIdentity {
+  readonly id: ProjectId;
+  readonly name: string;
+  readonly canonicalPath: string;
+  readonly gitRemote?: string;
+  readonly createdAt: number;
+  readonly lastSeenAt: number;
+}
+
+export interface WorkspaceIdentity {
+  readonly id: WorkspaceId;
+  readonly projectRoot: string;
+  readonly projectId: ProjectId;
+  readonly createdAt: number;
+  readonly lastActiveAt: number;
+}
 
 export interface ProjectInfo {
   readonly name: string;
@@ -116,6 +157,92 @@ export interface ProjectInfo {
   readonly hasGit: boolean;
   readonly scripts: Record<string, string>;
   readonly fileCount: number;
+}
+
+// ─── Session Domain & Checkpoints ────────────────────────────────
+
+export type SessionStatus =
+  | 'active'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled';
+
+export interface AgentStateSnapshot {
+  readonly plan?: string;
+  readonly currentStep?: string;
+  readonly completedSteps: readonly string[];
+  readonly pendingSteps: readonly string[];
+  readonly activeTool?: string;
+  readonly relevantContext?: readonly string[];
+  readonly verificationStatus?: 'untested' | 'passing' | 'failing';
+}
+
+export interface SessionCheckpoint {
+  readonly id: string;
+  readonly sessionId: SessionId;
+  readonly stepIndex: number;
+  readonly summary: string;
+  readonly state: AgentStateSnapshot;
+  readonly filesModified: readonly string[];
+  readonly timestamp: number;
+}
+
+export interface SessionSummary {
+  readonly id: SessionId;
+  readonly projectId: ProjectId;
+  readonly workspaceId: WorkspaceId;
+  readonly status: SessionStatus;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly taskSummary?: string;
+  readonly modelId?: string;
+  readonly providerName?: string;
+  readonly totalTokens?: TokenUsage;
+  readonly filesModified: readonly string[];
+}
+
+export interface StoredSession {
+  readonly id: SessionId;
+  readonly projectId: ProjectId;
+  readonly workspaceId: WorkspaceId;
+  readonly status: SessionStatus;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly taskSummary?: string;
+  readonly modelId: string;
+  readonly providerName: string;
+  readonly messages: readonly Message[];
+  readonly state: AgentStateSnapshot;
+  readonly checkpoints: readonly SessionCheckpoint[];
+  readonly filesModified: readonly string[];
+  readonly totalUsage: TokenUsage;
+}
+
+// ─── Repositories (Persistence Port Interfaces) ──────────────────
+
+export interface ProjectRepository {
+  save(project: ProjectIdentity): Promise<void>;
+  findById(id: ProjectId): Promise<ProjectIdentity | null>;
+  findByPath(path: string): Promise<ProjectIdentity | null>;
+  list(): Promise<ProjectIdentity[]>;
+}
+
+export interface WorkspaceRepository {
+  save(workspace: WorkspaceIdentity): Promise<void>;
+  findById(id: WorkspaceId): Promise<WorkspaceIdentity | null>;
+  findByProjectRoot(root: string): Promise<WorkspaceIdentity | null>;
+}
+
+export interface SessionRepository {
+  save(session: StoredSession): Promise<void>;
+  findById(id: SessionId): Promise<StoredSession | null>;
+  findLatestForProject(projectId: ProjectId, statuses?: SessionStatus[]): Promise<StoredSession | null>;
+  listForProject(projectId: ProjectId, limit?: number): Promise<SessionSummary[]>;
+  delete(id: SessionId): Promise<boolean>;
+  saveCheckpoint(checkpoint: SessionCheckpoint): Promise<void>;
+  getCheckpoints(sessionId: SessionId): Promise<SessionCheckpoint[]>;
 }
 
 // ─── Context Types ───────────────────────────────────────────────

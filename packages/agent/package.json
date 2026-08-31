@@ -6,7 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsc",
@@ -19,7 +22,8 @@
     "@sentinel/tools": "workspace:*",
     "@sentinel/context": "workspace:*",
     "@sentinel/memory": "workspace:*",
-    "@sentinel/permissions": "workspace:*"
+    "@sentinel/permissions": "workspace:*",
+    "@sentinel/storage": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

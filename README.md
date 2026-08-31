@@ -1,54 +1,99 @@
 # Sentinel 🛡️
 
 > **Next-Generation Open Source AI Software Engineering Agent**
+> Autonomous Architecture, Multi-Project Intelligence, Persistent Sessions & Zero-Config Distribution.
 
 Sentinel is an interactive software development agent designed to understand, navigate, build, test, and debug codebases across the full stack.
 
 ---
 
-## ⚡ Quickstart
+## ⚡ 1-Line Installation
 
-### 1. Prerequisites
-- **Node.js**: >= 20.0.0
-- **pnpm**: >= 9.0.0
-- **Git**: installed and in PATH
-
-### 2. Installation & Build
-
+### Linux & macOS
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/sentinel.git
-cd sentinel
-
-# Install dependencies
-pnpm install
-
-# Build all workspace packages
-pnpm build
+curl -fsSL https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribution/install.sh | sh
 ```
 
-### 3. Start Sentinel
-
-```bash
-# Start directly (Setup Wizard runs on first launch)
-pnpm start
-
-# Or in development mode (hot reload)
-pnpm dev
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribution/install.ps1 | iex
 ```
 
-On first launch, Sentinel's interactive setup wizard will guide you through:
-1. Choosing your provider (**Google AI Studio (default)**, OpenAI, Anthropic, or Custom OpenAI-compatible).
-2. Entering your API key (stored securely in `~/.sentinel/settings.json`).
-3. Selecting your active model (e.g. `gemini-2.5-flash`).
+### WinGet (Windows Package Manager)
+```bash
+winget install Sentinel.Sentinel
+```
 
-See [BUILD.md](BUILD.md) for full installation and multi-machine deployment instructions.
+### npm Global
+```bash
+npm install -g @sentinel/cli
+```
+
+---
+
+## 🚀 Usage
+
+Navigate to any codebase and launch Sentinel:
+
+```bash
+cd my-project
+sentinel
+```
+
+### Command-Line Flags
+
+```bash
+# Launch interactive session (or Setup Wizard on first launch)
+sentinel
+
+# Resume the latest active or interrupted session for this project
+sentinel --continue
+sentinel -c
+
+# Interactively browse and select from previous sessions
+sentinel --resume
+sentinel -r
+
+# Resume a specific session directly by ID
+sentinel --resume sess_1771802100_abc12
+
+# Run system health diagnostics
+sentinel doctor
+
+# Run non-destructive automated self-test of all subsystems
+sentinel --self-test
+
+# Display version and platform
+sentinel --version
+sentinel -v
+```
+
+---
+
+## 📁 Runtime Directory Layout
+
+Sentinel isolates its persistent state, configuration, and logs inside standard platform directories:
+
+```text
+~/sentinel/
+├── config/
+│   ├── settings.json       # User settings & active provider
+│   └── providers.json      # Custom provider definitions
+├── data/
+│   ├── sentinel.db         # SQLite persistent state (WAL mode: projects, sessions, checkpoints)
+│   ├── sessions/           # Session snapshots & metadata
+│   └── projects/           # Project identities & structural records
+├── cache/
+│   └── index/              # Structural symbol cache & AST data
+└── logs/
+    └── sentinel.log        # Structured rotated logs (max 10MB per file)
+```
 
 ---
 
 ## 🏗️ Architecture
 
-Sentinel uses a decoupled, modular monorepo structure:
+Sentinel is organized as a modular, decoupled TypeScript monorepo:
 
 ```text
 sentinel/
@@ -56,19 +101,18 @@ sentinel/
 │   └── cli/                # Interactive persistent Terminal UI (Ink + React)
 │
 ├── packages/
-│   ├── core/               # Shared types, errors, config, logger, metrics, event-bus
-│   ├── llm/                # Model-agnostic LLM provider abstraction (Google AI, OpenAI, Anthropic, Custom)
+│   ├── core/               # Domain types, platform abstraction, doctor, config resolver, logger, metrics, events
+│   ├── llm/                # LLM provider abstraction (Google AI, OpenAI, Anthropic, Custom/Ollama/OpenRouter)
 │   ├── tools/              # Filesystem, Shell, Git, and Project tools
-│   ├── agent/              # Agent Kernel (reason -> act -> observe -> adapt), session & verification
-│   ├── context/            # Context Engine (relevance scoring & token budgeting)
-│   ├── project/            # Project Indexer & Structural Analyzer (AST / symbol extraction)
+│   ├── agent/              # Agent Kernel, SessionManager, Checkpoint Engine, Verification
+│   ├── context/            # Context Engine (token budgeting, dynamic relevance scoring)
+│   ├── project/            # ProjectDetector, ProjectIdentityService, AST Indexer & Structural Analyzer
 │   ├── memory/             # Session memory, project memory, and tool history
-│   ├── storage/            # Local persistence abstraction (SQLite / In-Memory)
+│   ├── storage/            # SQLiteRepositories with schema migrations & WAL mode
 │   ├── git/                # Git client abstraction
 │   └── permissions/        # Three-tier tool permission system (safe, confirm_recommended, confirm_required)
 │
-└── tests/
-    └── fixtures/           # Small, deterministic test repositories
+└── distribution/           # Standalone installers (install.sh, install.ps1, WinGet manifest)
 ```
 
 ---
@@ -91,32 +135,41 @@ sentinel/
 
 ---
 
-## 🎮 Slash Commands
+## 🎮 Interactive Slash Commands
 
 | Command | Description |
 |---|---|
-| `/model` | Open interactive selector to choose/switch model for current provider |
-| `/reset` | Wipe `~/.sentinel/settings.json` and reset all configuration to 0 |
+| `/model` | Open interactive selector to choose or switch models in real-time |
+| `/reset` | Wipe `~/sentinel/config/settings.json` and reset all configuration |
 | `/status` | Show project tech stack, file count & git status |
 | `/permissions` | Show active tool permission levels & safety rules |
-| `/clear` | Clear conversation history and reset memory session |
-| `/help` | Show available slash commands |
-| `/exit` | Exit Sentinel |
+| `/clear` | Clear session message history |
+| `/exit`, `/quit` | Save session state and exit Sentinel |
 
 ---
 
-## 🧪 Testing
+## 🧪 Development & Building from Source
 
 ```bash
-# Run unit & integration tests
+# Clone repository
+git clone https://github.com/sentinel-ai/sentinel.git
+cd sentinel
+
+# Install dependencies
+pnpm install
+
+# Run unit and integration tests (36 tests)
 pnpm test
 
-# Run tests in watch mode
-pnpm test:watch
+# Build all workspace packages
+pnpm build
+
+# Produce standalone production bundle (dist/sentinel.js)
+pnpm bundle
 ```
 
 ---
 
 ## 📜 License
 
-Apache-2.0 or MIT. Open source.
+MIT License — free for personal and commercial development.

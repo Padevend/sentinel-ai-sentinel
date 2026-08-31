@@ -1,0 +1,128 @@
+name: Release Sentinel Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    name: Test and Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Test Suite
+        run: pnpm test
+
+  build-binaries:
+    name: Build Distribution Bundle (${{ matrix.os }})
+    needs: build-and-test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            artifact: sentinel-linux-x64.tar.gz
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+            artifact: sentinel-darwin-arm64.tar.gz
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            artifact: sentinel-windows-x64.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Bundle Production CLI
+        run: node scripts/bundle.mjs
+
+      - name: Package Artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist-package
+          cp dist/sentinel.cjs dist-package/sentinel
+          chmod +x dist-package/sentinel
+          tar -czf ${{ matrix.artifact }} -C dist-package sentinel
+
+      - name: Package Artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-package | Out-Null
+          Copy-Item dist/sentinel.cjs dist-package/sentinel.cjs
+          # Create batch runner for Windows
+          "@node %~dp0sentinel.cjs %*" | Out-File -Encoding ascii dist-package/sentinel.cmd
+          Compress-Archive -Path dist-package/* -DestinationPath ${{ matrix.artifact }} -Force
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-artifacts
+          find . -type f -name 'sentinel-*' -exec sha256sum {} + > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            release-artifacts/**/*
+            release-artifacts/SHA256SUMS
+          generate_release_notes: true
+          draft: false
+          prerelease: false

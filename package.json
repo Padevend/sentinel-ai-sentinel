@@ -6,6 +6,7 @@
   "description": "Sentinel — AI-powered software development agent",
   "scripts": {
     "build": "pnpm -r run build",
+    "bundle": "pnpm build && node scripts/bundle.mjs",
     "start": "node apps/cli/dist/index.js",
     "dev": "pnpm --filter @sentinel/cli run dev",
     "typecheck": "pnpm -r run typecheck",

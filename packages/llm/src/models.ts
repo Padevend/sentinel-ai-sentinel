@@ -44,7 +44,7 @@ export const PROVIDERS: ProviderInfo[] = [
   },
   {
     id: 'custom',
-    name: 'Custom (OpenAI-compatible / OpenRouter / Ollama)',
+    name: 'Custom (OpenAI-compatible / OpenRouter / Ollama , etc)',
     description: 'Connect any OpenAI-compatible API endpoint (OpenRouter, DeepSeek, Local LLMs, vLLM)',
     requiresBaseUrl: true,
     defaultBaseUrl: 'https://openrouter.ai/api/v1',

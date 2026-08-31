@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: Sentinel.Sentinel
+PackageVersion: 0.1.0
+PackageName: Sentinel
+Publisher: Sentinel AI
+License: MIT
+LicenseUrl: https://github.com/sentinel-ai/sentinel/blob/main/LICENSE
+ShortDescription: Autonomous AI Software Engineering Agent with Project Intelligence & Structural Analysis
+Moniker: sentinel
+Tags:
+  - ai
+  - agent
+  - developer-tools
+  - coding-assistant
+  - cli
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: sentinel.exe
+        PortableCommandAlias: sentinel
+    InstallerUrl: https://github.com/sentinel-ai/sentinel/releases/download/v0.1.0/sentinel-windows-x64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+PackageLocale: en-US
+ManifestType: singleton
+ManifestVersion: 1.6.0

@@ -9,7 +9,11 @@
 export type {
   ToolCallId,
   SessionId,
+  ProjectId,
+  WorkspaceId,
   AbsolutePath,
+  SentinelPaths,
+  PlatformType,
   AgentState,
   MessageRole,
   Message,
@@ -21,7 +25,18 @@ export type {
   TokenUsage,
   FinishReason,
   PermissionLevel,
+  ProjectRoot,
+  ProjectIdentity,
+  WorkspaceIdentity,
   ProjectInfo,
+  ProjectRepository,
+  WorkspaceRepository,
+  SessionRepository,
+  SessionStatus,
+  AgentStateSnapshot,
+  SessionCheckpoint,
+  SessionSummary,
+  StoredSession,
   ContextItem,
   ContextItemType,
   KnowledgeAssertion,
@@ -37,6 +52,13 @@ export type {
   FileChangedEvent,
   EventBus,
 } from './types.js';
+
+// Platform & OS
+export {
+  PlatformService,
+  getPlatformService,
+  getSentinelPaths,
+} from './platform.js';
 
 // Errors
 export {
@@ -63,8 +85,10 @@ export {
   updateSettings,
   resetSettings,
   isFirstLaunch,
-  getGlobalSettingsDir,
+  getGlobalConfigDir,
   getGlobalSettingsPath,
+  ConfigurationResolver,
+  SecretStore,
 } from './config.js';
 export type {
   SentinelConfig,
@@ -73,6 +97,17 @@ export type {
   ResolvedConfig,
   SettingsData,
 } from './config.js';
+
+// Doctor & Diagnostics
+export {
+  DoctorEngine,
+  SelfTestRunner,
+} from './doctor.js';
+export type {
+  CheckStatus,
+  DiagnosticItem,
+  DoctorReport,
+} from './doctor.js';
 
 // Logger
 export { Logger, createLogger } from './logger.js';

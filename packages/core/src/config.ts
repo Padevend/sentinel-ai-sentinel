@@ -1,68 +1,77 @@
 /**
- * @sentinel/core — Configuration system
+ * @sentinel/core — Configuration System
  *
- * Hierarchical configuration:
- * Built-in defaults → ~/.sentinel/settings.json (global) → .sentinel/config.json (project) → SENTINEL_* env vars.
+ * Implements strict hierarchical configuration resolution:
+ * Built-in defaults → ~/sentinel/config/settings.json (global) → <project>/.sentinel/settings.json (project) → Session / CLI overrides.
  *
- * Designed similar to Claude Code's flexible provider model:
- * - Default provider is Google AI Studio (Gemini 2.5 Flash)
- * - Settings are stored persistently in ~/.sentinel/settings.json
- * - Secrets can be loaded from settings.json or environment variables
+ * Secrets are securely isolated in the global settings or environment variables,
+ * and are never persisted in project repository folders.
  */
 
 import { z } from 'zod';
-import { readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { PlatformService } from './platform.js';
+import { ConfigurationError } from './errors.js';
 import type { LogLevel, PermissionLevel } from './types.js';
 
-// ─── Schema ──────────────────────────────────────────────────────
+// ─── Schemas ─────────────────────────────────────────────────────
 
-const PermissionOverrideSchema = z.object({
+export const PermissionOverrideSchema = z.object({
   tool: z.string(),
   level: z.enum(['safe', 'confirm_recommended', 'confirm_required']),
 });
 
-const ModelConfigSchema = z.object({
+export const ModelConfigSchema = z.object({
   provider: z.string().default('google'),
-  model: z.string().default('gemini-2.5-flash'),
+  model: z.string().default('gemini-3.1-pro'),
   baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
 });
 
-const SentinelConfigSchema = z.object({
+export const PermissionsConfigSchema = z.object({
+  defaultLevel: z.enum(['safe', 'confirm_recommended', 'confirm_required']).default('confirm_recommended'),
+  overrides: z.array(PermissionOverrideSchema).default([]),
+  allowedCommands: z.array(z.string()).default([]),
+  blockedCommands: z.array(z.string()).default([]),
+});
+
+export const AgentConfigSchema = z.object({
+  maxIterations: z.number().int().positive().default(25),
+  maxVerificationRetries: z.number().int().positive().default(3),
+  streamResponses: z.boolean().default(true),
+});
+
+export const LoggingConfigSchema = z.object({
+  level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  file: z.string().optional(),
+});
+
+export const PrivacyConfigSchema = z.object({
+  sensitivePatterns: z.array(z.string()).default([
+    '.env', '.env.*', '*.pem', '*.key', '*.p12',
+    'credentials.*', 'service-account*.json',
+    '*.secret', 'id_rsa*', 'id_ed25519*',
+  ]),
+});
+
+export const SentinelConfigSchema = z.object({
+  version: z.number().int().default(1),
   model: ModelConfigSchema.default({}),
-  permissions: z.object({
-    defaultLevel: z.enum(['safe', 'confirm_recommended', 'confirm_required']).default('confirm_recommended'),
-    overrides: z.array(PermissionOverrideSchema).default([]),
-    allowedCommands: z.array(z.string()).default([]),
-    blockedCommands: z.array(z.string()).default([]),
-  }).default({}),
-  agent: z.object({
-    maxIterations: z.number().int().positive().default(25),
-    maxVerificationRetries: z.number().int().positive().default(3),
-    streamResponses: z.boolean().default(true),
-  }).default({}),
-  logging: z.object({
-    level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-    file: z.string().optional(),
-  }).default({}),
-  privacy: z.object({
-    sensitivePatterns: z.array(z.string()).default([
-      '.env', '.env.*', '*.pem', '*.key', '*.p12',
-      'credentials.*', 'service-account*.json',
-      '*.secret', 'id_rsa*', 'id_ed25519*',
-    ]),
-  }).default({}),
+  permissions: PermissionsConfigSchema.default({}),
+  agent: AgentConfigSchema.default({}),
+  logging: LoggingConfigSchema.default({}),
+  privacy: PrivacyConfigSchema.default({}),
 });
 
 export type SentinelConfig = z.infer<typeof SentinelConfigSchema>;
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;
 
-// ─── Settings file structure (~/.sentinel/settings.json) ──────────
-
 export interface SettingsData {
+  version?: number;
   model: {
     provider: string;
     model: string;
@@ -88,52 +97,48 @@ export interface SettingsData {
   };
 }
 
-// ─── Runtime secrets ─────────────────────────────────────────────
+// ─── Runtime Secrets (never serialized in project config) ─────────
 
 export interface RuntimeSecrets {
   readonly apiKey: string;
 }
 
-// ─── Resolved config (config + env + overrides merged) ───────────
+// ─── Resolved Configuration (Immutable Object) ───────────────────
 
 export interface ResolvedConfig {
   readonly config: SentinelConfig;
   readonly secrets: RuntimeSecrets;
   readonly projectRoot: string;
-  readonly settingsPath: string;
+  readonly globalConfigPath: string;
+  readonly projectConfigPath?: string;
 }
 
-// ─── Paths ───────────────────────────────────────────────────────
+// ─── Path Helpers ────────────────────────────────────────────────
 
-export function getGlobalSettingsDir(): string {
-  return join(homedir(), '.sentinel');
+export function getGlobalConfigDir(): string {
+  return PlatformService.getInstance().getPaths().configDir;
 }
 
 export function getGlobalSettingsPath(): string {
-  return join(getGlobalSettingsDir(), 'settings.json');
+  return join(getGlobalConfigDir(), 'settings.json');
 }
-
-// ─── Defaults ────────────────────────────────────────────────────
-
-function getDefaults(): SentinelConfig {
-  return SentinelConfigSchema.parse({});
-}
-
-// ─── Settings Management (~/.sentinel/settings.json) ─────────────
 
 /**
- * Checks if Sentinel is running for the first time without any configured settings.
+ * Returns legacy ~/.sentinel/settings.json path if it exists for migration.
+ */
+function getLegacySettingsPath(): string {
+  return join(homedir(), '.sentinel', 'settings.json');
+}
+
+// ─── Settings Management ─────────────────────────────────────────
+
+/**
+ * Checks if Sentinel is running for the first time without any configured settings or credentials.
  */
 export async function isFirstLaunch(): Promise<boolean> {
-  const settingsPath = getGlobalSettingsPath();
-  try {
-    const raw = await readFile(settingsPath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<SettingsData>;
-    if (parsed.model?.apiKey && parsed.model.apiKey.trim().length > 0) {
-      return false;
-    }
-  } catch {
-    // File doesn't exist or is invalid
+  const settings = await loadSettings();
+  if (settings?.model?.apiKey && settings.model.apiKey.trim().length > 0) {
+    return false;
   }
 
   // Check if an API key is available via environment variables
@@ -151,31 +156,40 @@ export async function isFirstLaunch(): Promise<boolean> {
 }
 
 /**
- * Load global user settings from ~/.sentinel/settings.json
+ * Load global user settings from ~/sentinel/config/settings.json (with migration support).
  */
 export async function loadSettings(): Promise<SettingsData | null> {
-  const settingsPath = getGlobalSettingsPath();
+  const primaryPath = getGlobalSettingsPath();
+  const legacyPath = getLegacySettingsPath();
+
+  // Try primary standard path first
   try {
-    const raw = await readFile(settingsPath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    return parsed as SettingsData;
+    const raw = await readFile(primaryPath, 'utf-8');
+    return JSON.parse(raw) as SettingsData;
   } catch {
-    return null;
+    // Try legacy path
+    try {
+      const rawLegacy = await readFile(legacyPath, 'utf-8');
+      const parsed = JSON.parse(rawLegacy) as SettingsData;
+      // Auto-migrate to standard path
+      await saveSettings(parsed);
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 }
 
 /**
- * Save user settings to ~/.sentinel/settings.json with restricted permissions.
+ * Save user settings to ~/sentinel/config/settings.json using atomic crash-safe writes.
  */
 export async function saveSettings(settings: SettingsData): Promise<void> {
-  const dir = getGlobalSettingsDir();
-  const filePath = getGlobalSettingsPath();
+  const platformService = PlatformService.getInstance();
+  await platformService.ensureDirectories();
+  const primaryPath = getGlobalSettingsPath();
 
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeFile(filePath, JSON.stringify(settings, null, 2), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
+  const formatted = JSON.stringify(settings, null, 2);
+  await platformService.atomicWriteFile(primaryPath, formatted, 0o600);
 }
 
 /**
@@ -185,7 +199,7 @@ export async function updateSettings(partial: Partial<SettingsData>): Promise<Se
   const existing = (await loadSettings()) ?? {
     model: {
       provider: 'google',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.1-pro',
     },
   };
 
@@ -199,31 +213,49 @@ export async function updateSettings(partial: Partial<SettingsData>): Promise<Se
 }
 
 /**
- * Reset all user settings (deletes ~/.sentinel/settings.json).
+ * Reset all user settings (deletes settings.json).
  */
 export async function resetSettings(): Promise<void> {
-  const filePath = getGlobalSettingsPath();
+  const primaryPath = getGlobalSettingsPath();
+  const legacyPath = getLegacySettingsPath();
+
   try {
-    await rm(filePath, { force: true });
+    await rm(primaryPath, { force: true });
   } catch {
-    // Ignore if not present
+    // Ignore
+  }
+  try {
+    await rm(legacyPath, { force: true });
+  } catch {
+    // Ignore
   }
 }
 
-// ─── Project Config (.sentinel/config.json) ──────────────────────
+// ─── Project Config (<projectRoot>/.sentinel/settings.json) ───────
 
-async function loadProjectConfigFile(projectRoot: string): Promise<Partial<SentinelConfig> | null> {
-  const configPath = join(projectRoot, '.sentinel', 'config.json');
-  try {
-    const raw = await readFile(configPath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    return parsed as Partial<SentinelConfig>;
-  } catch {
-    return null;
+async function loadProjectConfigFile(projectRoot: string): Promise<{
+  data: Partial<SentinelConfig> | null;
+  path?: string;
+}> {
+  const candidates = [
+    join(projectRoot, '.sentinel', 'settings.json'),
+    join(projectRoot, '.sentinel', 'config.json'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const raw = await readFile(candidate, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return { data: parsed as Partial<SentinelConfig>, path: candidate };
+    } catch {
+      // Continue to next candidate
+    }
   }
+
+  return { data: null };
 }
 
-// ─── Apply env vars (SENTINEL_*) ─────────────────────────────────
+// ─── Environment Overrides (SENTINEL_*) ───────────────────────────
 
 function applyEnvOverrides(config: SentinelConfig): SentinelConfig {
   const env = process.env;
@@ -258,87 +290,108 @@ function applyEnvOverrides(config: SentinelConfig): SentinelConfig {
   return { ...config, model, agent, logging };
 }
 
-// ─── Resolve secrets ─────────────────────────────────────────────
+// ─── Secret Resolution ───────────────────────────────────────────
 
-function resolveSecrets(provider = 'google', settingsApiKey?: string): RuntimeSecrets {
-  // 1. Explicit SENTINEL_API_KEY override
-  let apiKey = process.env['SENTINEL_API_KEY'] ?? '';
+export class SecretStore {
+  static resolveSecret(provider = 'google', settingsApiKey?: string): RuntimeSecrets {
+    // 1. Explicit SENTINEL_API_KEY override
+    let apiKey = process.env['SENTINEL_API_KEY'] ?? '';
 
-  // 2. Provider-specific env vars
-  if (!apiKey) {
-    const norm = provider.toLowerCase();
-    if (norm === 'google' || norm === 'gemini') {
-      apiKey = process.env['GEMINI_API_KEY'] ?? process.env['GOOGLE_API_KEY'] ?? '';
-    } else if (norm === 'anthropic' || norm === 'claude') {
-      apiKey = process.env['ANTHROPIC_API_KEY'] ?? '';
-    } else if (norm === 'openai') {
-      apiKey = process.env['OPENAI_API_KEY'] ?? '';
+    // 2. Provider-specific environment variable
+    if (!apiKey) {
+      const norm = provider.toLowerCase();
+      if (norm.includes('google') || norm.includes('gemini')) {
+        apiKey = process.env['GEMINI_API_KEY'] ?? process.env['GOOGLE_API_KEY'] ?? '';
+      } else if (norm.includes('anthropic') || norm.includes('claude')) {
+        apiKey = process.env['ANTHROPIC_API_KEY'] ?? '';
+      } else if (norm.includes('openai')) {
+        apiKey = process.env['OPENAI_API_KEY'] ?? '';
+      }
     }
-  }
 
-  // 3. From saved settings.json
-  if (!apiKey && settingsApiKey) {
-    apiKey = settingsApiKey;
-  }
+    // 3. From global settings.json
+    if (!apiKey && settingsApiKey) {
+      apiKey = settingsApiKey;
+    }
 
-  // 4. General fallback across all known env keys
-  if (!apiKey) {
-    apiKey =
-      process.env['GEMINI_API_KEY'] ??
-      process.env['GOOGLE_API_KEY'] ??
-      process.env['OPENAI_API_KEY'] ??
-      process.env['ANTHROPIC_API_KEY'] ??
-      '';
-  }
+    // 4. Fallback across all common API keys
+    if (!apiKey) {
+      apiKey =
+        process.env['GEMINI_API_KEY'] ??
+        process.env['GOOGLE_API_KEY'] ??
+        process.env['OPENAI_API_KEY'] ??
+        process.env['ANTHROPIC_API_KEY'] ??
+        '';
+    }
 
-  return { apiKey };
+    return { apiKey };
+  }
+}
+
+// ─── Configuration Resolver ──────────────────────────────────────
+
+export class ConfigurationResolver {
+  /**
+   * Resolves the full Sentinel configuration hierarchy:
+   * Defaults → Global (~/sentinel/config/settings.json) → Project (.sentinel/settings.json) → Environment overrides.
+   */
+  static async resolve(projectRoot: string): Promise<ResolvedConfig> {
+    const defaults = SentinelConfigSchema.parse({});
+    const globalSettings = await loadSettings();
+    const projectConfigResult = await loadProjectConfigFile(projectRoot);
+
+    let merged: Record<string, unknown> = defaults as unknown as Record<string, unknown>;
+
+    // Merge global settings
+    if (globalSettings) {
+      const { apiKey: _, ...cleanModel } = globalSettings.model;
+      const cleanGlobal = {
+        ...globalSettings,
+        model: cleanModel,
+      };
+      merged = deepMerge(merged, cleanGlobal as Record<string, unknown>);
+    }
+
+    // Merge project settings
+    if (projectConfigResult.data) {
+      merged = deepMerge(merged, projectConfigResult.data as Record<string, unknown>);
+    }
+
+    // Validate merged schema with descriptive errors
+    const parseResult = SentinelConfigSchema.safeParse(merged);
+    if (!parseResult.success) {
+      const issues = parseResult.error.issues
+        .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
+        .join('\n');
+      throw new ConfigurationError(`Invalid configuration detected:\n${issues}`, {
+        code: 'INVALID_CONFIG_SCHEMA',
+      });
+    }
+
+    // Apply environment overrides (highest precedence)
+    const finalConfig = applyEnvOverrides(parseResult.data);
+    const secrets = SecretStore.resolveSecret(
+      finalConfig.model.provider,
+      globalSettings?.model?.apiKey,
+    );
+
+    return {
+      config: finalConfig,
+      secrets,
+      projectRoot,
+      globalConfigPath: getGlobalSettingsPath(),
+      projectConfigPath: projectConfigResult.path,
+    };
+  }
 }
 
 // ─── Public API ──────────────────────────────────────────────────
 
-/**
- * Loads the full Sentinel configuration by merging:
- * 1. Built-in defaults (provider: 'google', model: 'gemini-2.5-flash')
- * 2. ~/.sentinel/settings.json (global user settings & keys)
- * 3. .sentinel/config.json (project-specific overrides)
- * 4. System environment variables (SENTINEL_*)
- */
 export async function loadConfig(projectRoot: string): Promise<ResolvedConfig> {
-  const defaults = getDefaults();
-  const settings = await loadSettings();
-  const projectFileConfig = await loadProjectConfigFile(projectRoot);
-
-  // Merge defaults + settings.json
-  let merged: Record<string, unknown> = defaults as unknown as Record<string, unknown>;
-  if (settings) {
-    const { apiKey: _, ...settingsWithoutKey } = settings.model;
-    const settingsClean = {
-      ...settings,
-      model: settingsWithoutKey,
-    };
-    merged = deepMerge(merged, settingsClean as Record<string, unknown>);
-  }
-
-  // Merge project-level config
-  if (projectFileConfig) {
-    merged = deepMerge(merged, projectFileConfig as Record<string, unknown>);
-  }
-
-  const validatedConfig = SentinelConfigSchema.parse(merged);
-
-  // Apply environment overrides
-  const config = applyEnvOverrides(validatedConfig);
-  const secrets = resolveSecrets(config.model.provider, settings?.model?.apiKey);
-
-  return {
-    config,
-    secrets,
-    projectRoot,
-    settingsPath: getGlobalSettingsPath(),
-  };
+  return ConfigurationResolver.resolve(projectRoot);
 }
 
-// ─── Deep merge utility ──────────────────────────────────────────
+// ─── Deep Merge Utility ──────────────────────────────────────────
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
@@ -355,7 +408,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
       !Array.isArray(targetVal)
     ) {
       result[key] = deepMerge(
-        targetVal as Record<string, unknown>,
+        (targetVal ?? {}) as Record<string, unknown>,
         sourceVal as Record<string, unknown>,
       );
     } else if (sourceVal !== undefined) {
