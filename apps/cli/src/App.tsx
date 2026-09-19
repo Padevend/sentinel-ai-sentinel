@@ -101,7 +101,7 @@ export const App: React.FC<AppProps> = ({
   }, [exit, isBusy, kernel, session.id, sessionManager]);
 
   useEffect(() => {
-    kernel.setConfirmationHandler((check) => new Promise<boolean>((resolve) => {
+    kernel.setConfirmationHandler((check: any) => new Promise<boolean>((resolve) => {
       setPendingCheck({ check, resolve });
     }));
     return () => kernel.setConfirmationHandler(null);
@@ -453,10 +453,10 @@ export const App: React.FC<AppProps> = ({
           onDecision={handleResumeDecision}
         />
       ) : mode === 'model_select' ? (
-          <ModelSelector
-            providerName={providerName}
-            provider={activeProvider}
-            discovery={modelDiscovery}
+        <ModelSelector
+          providerName={providerName}
+          provider={activeProvider}
+          discovery={modelDiscovery}
           currentModelId={currentModelId}
           onSelect={handleModelChange}
           onCancel={() => setMode('chat')}

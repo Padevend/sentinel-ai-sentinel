@@ -7,6 +7,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { LLMProvider, ModelDiscovery, ModelInfo } from '@sentinel/llm';
+import { THEME } from '../theme.js';
 
 interface ModelSelectorProps {
   providerName: string;
@@ -16,6 +17,11 @@ interface ModelSelectorProps {
   onSelect: (modelId: string) => void;
   onCancel: () => void;
 }
+
+const VISIBLE_COUNT = 6;
+
+// Composant réutilisé pour la cohérence UI avec le Header
+const Dot: React.FC<{ color: string }> = ({ color }) => <Text color={color}>●</Text>;
 
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
   providerName,
@@ -73,52 +79,98 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     if (key.escape || input === 'q' || input === 'Q') onCancel();
   });
 
+  // Logique de scroll virtuel
+  let startIndex = selectedIndex - Math.floor(VISIBLE_COUNT / 2);
+  if (startIndex < 0) startIndex = 0;
+  if (startIndex + VISIBLE_COUNT > models.length) {
+    startIndex = Math.max(0, models.length - VISIBLE_COUNT);
+  }
+  const visibleModels = models.slice(startIndex, startIndex + VISIBLE_COUNT);
+
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={1} marginY={1}>
-      <Box marginBottom={1} justifyContent="space-between">
-        <Text bold color="cyan">Select Active Model for {providerName}</Text>
-        <Text color="gray">[↑/↓: Navigate • Enter: Select • Esc: Cancel]</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={THEME.graphiteLight} paddingX={1} marginBottom={1}>
+
+      {/* En-tête de la box aligné sur le style Header */}
+      <Box justifyContent="space-between" marginBottom={1}>
+        <Box>
+          <Text bold color={THEME.green}>▲ Model Selector</Text>
+          <Text color={THEME.muted}> · {providerName}</Text>
+        </Box>
+        <Box>
+          <Text color={THEME.muted}>↑/↓ nav · ↵ select · esc cancel</Text>
+        </Box>
       </Box>
 
-      {isLoading ? <Text color="gray">Discovering models from {providerName}…</Text> : null}
-      {!isLoading && loadError ? <Text color="yellow">Model discovery failed: {loadError}</Text> : null}
+      {/* États de chargement et erreurs */}
+      {isLoading && <Text color={THEME.muted}>Discovering models...</Text>}
+      {!isLoading && loadError && <Text color={THEME.warning}>Discovery failed: {loadError}</Text>}
+
+      {/* Mode fallback si aucun modèle trouvé */}
       {!isLoading && models.length === 0 ? (
         <Box flexDirection="column">
-          <Text color="gray">No models were returned. Enter a provider model identifier:</Text>
-          <TextInput
-            value={customModelInput}
-            onChange={setCustomModelInput}
-            onSubmit={(value) => {
-              const model = value.trim();
-              if (model) onSelect(model);
-            }}
-            placeholder="model identifier"
-          />
+          <Text color={THEME.muted}>No models found. Enter ID manually:</Text>
+          <Box>
+            <Box width={2}><Text color={THEME.green}>❯</Text></Box>
+            <TextInput
+              value={customModelInput}
+              onChange={setCustomModelInput}
+              onSubmit={(value) => {
+                const model = value.trim();
+                if (model) onSelect(model);
+              }}
+              placeholder="model identifier"
+            />
+          </Box>
         </Box>
       ) : null}
 
-      {models.map((model, index) => {
+      {/* Rendu paginé des modèles */}
+      {visibleModels.map((model, index) => {
+        const absoluteIndex = startIndex + index;
+        const selected = absoluteIndex === selectedIndex;
+        const isActive = model.id === currentModelId;
+
         const context = model.contextLength === undefined
-          ? 'context unknown'
+          ? '?'
           : model.contextLength >= 1_000_000
-            ? `${(model.contextLength / 1_000_000).toFixed(0)}M tokens`
-            : `${(model.contextLength / 1_000).toFixed(0)}k tokens`;
-        const selected = index === selectedIndex;
+            ? `${(model.contextLength / 1_000_000).toFixed(0)}M`
+            : `${(model.contextLength / 1_000).toFixed(0)}k`;
+
+        const reasoning = model.supportsReasoningEffort ? ' · native reason' : '';
+
         return (
-          <Box key={model.id} flexDirection="column" paddingLeft={1} marginBottom={index < models.length - 1 ? 1 : 0}>
-            <Box>
-              <Text bold color={selected ? 'cyan' : 'white'}>{selected ? '❯ ' : '  '}{model.displayName ?? model.id} </Text>
-              <Text color="gray">({model.id}) • {context}</Text>
-              {model.id === currentModelId ? <Text color="green"> [active]</Text> : null}
+          <Box key={model.id}>
+            {/* Curseur de sélection */}
+            <Box width={2}>
+              {selected ? <Text bold color={THEME.green}>❯</Text> : <Text> </Text>}
             </Box>
-            <Box paddingLeft={2}>
-              <Text color={selected ? 'white' : 'gray'}>
-                {model.supportsReasoningEffort ? 'Native reasoning effort supported.' : 'Reasoning policy orchestrated by Sentinel.'}
-              </Text>
+
+            {/* Indicateur d'état actif */}
+            <Box width={3}>
+              {isActive ? <Dot color={THEME.greenStrong} /> : <Text> </Text>}
             </Box>
+
+            {/* Nom et infos du modèle */}
+            <Text color={selected ? THEME.text : THEME.muted}>
+              {model.displayName ?? model.id}
+            </Text>
+            <Text color={THEME.muted}>
+              {' '}({model.id}) · {context} tokens{reasoning}
+            </Text>
           </Box>
         );
       })}
+
+      {/* Indicateurs de pagination visuelle */}
+      {models.length > VISIBLE_COUNT && (
+        <Box marginTop={1}>
+          <Text color={THEME.muted}>
+            {startIndex > 0 ? '▲ ' : '  '}
+            Showing {startIndex + 1}-{startIndex + visibleModels.length} of {models.length}
+            {startIndex + VISIBLE_COUNT < models.length ? ' ▼' : ''}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 };

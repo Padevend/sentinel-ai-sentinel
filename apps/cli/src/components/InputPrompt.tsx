@@ -16,11 +16,33 @@ interface InputPromptProps {
   fileContextEngine?: FileContextEngine;
 }
 
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+// Fonction utilitaire pour formater le temps dynamiquement
+const formatTime = (ms: number): string => {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h${String(minutes).padStart(2, '0')}m${String(seconds).padStart(2, '0')}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+  }
+  // En dessous d'une minute, on garde la décimale pour un effet fluide (ex: 12.5s)
+  return `${(ms / 1000).toFixed(1)}s`;
+};
+
 export const InputPrompt: React.FC<InputPromptProps> = ({ onSubmit, isDisabled, fileContextEngine }) => {
   const [value, setValue] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isDismissed, setIsDismissed] = useState(false);
   const [fileSelectedIndex, setFileSelectedIndex] = useState(0);
+
+  const [elapsed, setElapsed] = useState(0);
+  const [tick, setTick] = useState(0);
 
   const showSuggestions = !isDisabled && !isDismissed && value.trim().startsWith('/') && !value.includes(' ');
   const matchingCommands = showSuggestions ? getMatchingCommands(value) : [];
@@ -29,6 +51,22 @@ export const InputPrompt: React.FC<InputPromptProps> = ({ onSubmit, isDisabled, 
   const fileMatches: readonly FileMatch[] = showFileSuggestions && fileContextEngine && fileQueryMatch
     ? fileContextEngine.search(fileQueryMatch[1] ?? '', 8)
     : [];
+
+  useEffect(() => {
+    if (!isDisabled) {
+      setElapsed(0);
+      setTick(0);
+      return;
+    }
+
+    const startTime = Date.now();
+    const timer = setInterval(() => {
+      setElapsed(Date.now() - startTime);
+      setTick((t) => t + 1);
+    }, 80);
+
+    return () => clearInterval(timer);
+  }, [isDisabled]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -84,9 +122,7 @@ export const InputPrompt: React.FC<InputPromptProps> = ({ onSubmit, isDisabled, 
 
   const handleChange = (val: string) => {
     setValue(val);
-    if (isDismissed) {
-      setIsDismissed(false);
-    }
+    if (isDismissed) setIsDismissed(false);
   };
 
   const handleSubmit = (val: string) => {
@@ -105,27 +141,33 @@ export const InputPrompt: React.FC<InputPromptProps> = ({ onSubmit, isDisabled, 
     onSubmit(finalCommand);
   };
 
+  const currentFrame = SPINNER_FRAMES[tick % SPINNER_FRAMES.length];
+  const timeDisplay = formatTime(elapsed); // Utilisation de la nouvelle fonction
+
   return (
-    <Box flexDirection="column">
-      <Box
-        borderStyle="round"
-        borderColor={THEME.graphiteLight}
-        paddingX={1}
-      >
-        <Text color={isDisabled ? THEME.muted : THEME.green}>{'> '}</Text>
-        {isDisabled ? (
-          <Text color={THEME.muted} dimColor>
-            working…
-          </Text>
-        ) : (
+    <Box flexDirection="column" marginY={isDisabled ? 1 : 0}>
+      {isDisabled ? (
+        <Box paddingX={1} justifyContent="space-between">
+          <Box>
+            <Text color={THEME.green}>{currentFrame} </Text>
+            <Text color={THEME.text}>Thinking</Text>
+            <Text color={THEME.muted}>…</Text>
+          </Box>
+          <Box>
+            <Text color={THEME.muted}>{timeDisplay}</Text>
+          </Box>
+        </Box>
+      ) : (
+        <Box borderStyle="round" borderColor={THEME.graphiteLight} paddingX={1}>
+          <Text color={THEME.green}>❯ </Text>
           <TextInput
             value={value}
             onChange={handleChange}
             onSubmit={handleSubmit}
             placeholder="Ask anything, or / for commands"
           />
-        )}
-      </Box>
+        </Box>
+      )}
 
       {showSuggestions && (
         <CommandSuggestions
@@ -135,15 +177,20 @@ export const InputPrompt: React.FC<InputPromptProps> = ({ onSubmit, isDisabled, 
       )}
 
       {showFileSuggestions && fileMatches.length > 0 ? (
-        <Box flexDirection="column" paddingLeft={2}>
+        <Box flexDirection="column" paddingLeft={2} marginTop={1}>
           {fileMatches.map((match, index) => (
             <Box key={match.path}>
-              <Text color={index === fileSelectedIndex ? THEME.green : THEME.muted}>
-                {index === fileSelectedIndex ? '❯ ' : '  '}{match.path}
+              <Box width={2}>
+                {index === fileSelectedIndex ? <Text bold color={THEME.green}>❯</Text> : <Text> </Text>}
+              </Box>
+              <Text color={index === fileSelectedIndex ? THEME.text : THEME.muted}>
+                {match.path}
               </Text>
             </Box>
           ))}
-          <Text color="gray" dimColor>tab to complete file · ↑↓ to navigate</Text>
+          <Box marginTop={1}>
+            <Text color={THEME.muted}>tab to complete · ↑/↓ nav</Text>
+          </Box>
         </Box>
       ) : null}
     </Box>
