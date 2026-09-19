@@ -2,7 +2,7 @@
  * @sentinel/cli — Root Application Component
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useApp } from 'ink';
 import type {
   ProjectInfo,
@@ -11,37 +11,50 @@ import type {
   ToolStartedEvent,
   ToolCompletedEvent,
 } from '@sentinel/core';
-import { updateSettings, resetSettings } from '@sentinel/core';
-import { createProvider, type LLMProvider } from '@sentinel/llm';
+import { loadSettings, saveSettings, updateSettings, resetSettings } from '@sentinel/core';
+import { createProvider } from '@sentinel/llm';
+import type { LLMProvider, ModelDiscovery, ReasoningEffort } from '@sentinel/llm';
+import type { FileContextEngine } from '@sentinel/context';
 import type { AgentKernel, AgentSession, SessionManager } from '@sentinel/agent';
-import type { PermissionCheck } from '@sentinel/permissions';
+import type { PermissionCheck, PermissionManager, PermissionOverride, PermissionPolicy } from '@sentinel/permissions';
 import { Header } from './components/Header.js';
 import { MessageList, type DisplayMessage } from './components/MessageList.js';
 import { ToolActivity, type ActivityItem } from './components/ToolActivity.js';
 import { InputPrompt } from './components/InputPrompt.js';
 import { ConfirmationPrompt } from './components/ConfirmationPrompt.js';
 import { ModelSelector } from './components/ModelSelector.js';
+import { PermissionPanel } from './components/PermissionPanel.js';
+import { ReasoningSelector } from './components/ReasoningSelector.js';
+import { ResumeConfirmation } from './components/ResumeConfirmation.js';
 import { parseSlashCommand } from './commands.js';
 
 interface AppProps {
   projectInfo: ProjectInfo;
   kernel: AgentKernel;
+  permissions: PermissionManager;
   session: AgentSession;
   sessionManager?: SessionManager;
   resolvedConfig: ResolvedConfig;
   initialProviderName: string;
   initialModelId: string;
+  provider: LLMProvider;
+  modelDiscovery: ModelDiscovery;
+  fileContextEngine: FileContextEngine;
   initialMessage?: string;
 }
 
 export const App: React.FC<AppProps> = ({
   projectInfo,
   kernel,
+  permissions,
   session,
   sessionManager,
   resolvedConfig,
   initialProviderName,
   initialModelId,
+  provider,
+  modelDiscovery,
+  fileContextEngine,
   initialMessage,
 }) => {
   const { exit } = useApp();
@@ -69,12 +82,45 @@ export const App: React.FC<AppProps> = ({
   const [streamingChunk, setStreamingChunk] = useState<string>('');
   const [isBusy, setIsBusy] = useState<boolean>(false);
   const [providerName, setProviderName] = useState<string>(initialProviderName);
+  const [activeProvider, setActiveProvider] = useState<LLMProvider>(provider);
   const [currentModelId, setCurrentModelId] = useState<string>(initialModelId);
-  const [mode, setMode] = useState<'chat' | 'model_select'>('chat');
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | undefined>(resolvedConfig.config.model.reasoningEffort);
+  const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>(() => permissions.getPolicy());
+  const [mode, setMode] = useState<'chat' | 'model_select' | 'permissions' | 'reasoning_select'>('chat');
+  const [resumeApproved, setResumeApproved] = useState<boolean>(session.status !== 'interrupted');
   const [pendingCheck, setPendingCheck] = useState<{
     check: PermissionCheck;
     resolve: (approved: boolean) => void;
   } | null>(null);
+
+  const closeSession = useCallback(async (status: 'completed' | 'cancelled'): Promise<void> => {
+    if (isBusy) kernel.cancel(session.id);
+    session.setStatus(status);
+    if (sessionManager) await sessionManager.saveSession(session);
+    exit();
+  }, [exit, isBusy, kernel, session.id, sessionManager]);
+
+  useEffect(() => {
+    kernel.setConfirmationHandler((check) => new Promise<boolean>((resolve) => {
+      setPendingCheck({ check, resolve });
+    }));
+    return () => kernel.setConfirmationHandler(null);
+  }, [kernel]);
+
+  useEffect(() => {
+    const handleInterrupt = (): void => {
+      if (isBusy) {
+        kernel.cancel(session.id);
+        return;
+      }
+      void closeSession('completed');
+    };
+    process.on('SIGINT', handleInterrupt);
+    return () => { process.off('SIGINT', handleInterrupt); };
+  }, [closeSession, isBusy, kernel, session.id]);
+
+  useEffect(() => () => fileContextEngine.close(), [fileContextEngine]);
+
 
   // Subscribe to agent events
   useEffect(() => {
@@ -131,7 +177,7 @@ export const App: React.FC<AppProps> = ({
       await updateSettings({
         model: {
           provider: resolvedConfig.config.model.provider,
-          model: newModelId,
+          modelId: newModelId,
           baseUrl: resolvedConfig.config.model.baseUrl,
           apiKey: resolvedConfig.secrets.apiKey,
         },
@@ -145,11 +191,13 @@ export const App: React.FC<AppProps> = ({
           model: {
             ...resolvedConfig.config.model,
             model: newModelId,
+            modelId: newModelId,
           },
         },
       };
       const newProvider = createProvider(updatedResolvedConfig);
-      (kernel as unknown as { provider: LLMProvider }).provider = newProvider;
+      kernel.setProvider(newProvider);
+      setActiveProvider(newProvider);
 
       setCurrentModelId(newModelId);
       setProviderName(newProvider.name);
@@ -180,20 +228,96 @@ export const App: React.FC<AppProps> = ({
     }
   };
 
-  const handleReset = async () => {
+  const handleReasoningChange = async (effort: ReasoningEffort | undefined): Promise<void> => {
+    setMode('chat');
+    kernel.setReasoningEffort(effort);
+    setReasoningEffort(effort);
+
     try {
-      await resetSettings();
-      setMessages([]);
-      session.clear();
-      setMessages([
+      const existing = await loadSettings();
+      if (effort) {
+        await updateSettings({
+          model: {
+            provider: resolvedConfig.config.model.provider,
+            modelId: currentModelId || undefined,
+            reasoningEffort: effort,
+          },
+        });
+      } else if (existing) {
+        const model = { ...existing.model };
+        delete model.reasoningEffort;
+        await saveSettings({ ...existing, model });
+      }
+      setMessages((prev) => [
+        ...prev,
         {
           id: `sys-${Date.now()}`,
           role: 'system',
-          content:
-            '✓ All Sentinel configuration and credentials have been reset to defaults.\n' +
-            'Settings file ~/sentinel/config/settings.json removed. Restart Sentinel to run the setup wizard again.',
+          content: `✓ Reasoning effort: ${effort ?? 'auto'} (appliqué pour les prochains tours)`,
         },
       ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: 'system',
+          content: `Impossible d'enregistrer le mode de raisonnement: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    }
+  };
+
+  const handlePermissionApply = async (update: {
+    defaultLevel: PermissionPolicy['defaultLevel'];
+    overrides: readonly PermissionOverride[];
+    persist: boolean;
+  }): Promise<void> => {
+    permissions.updatePolicy({
+      defaultLevel: update.defaultLevel,
+      overrides: update.overrides,
+    });
+    permissions.clearSessionOverrides();
+    const nextPolicy = permissions.getPolicy();
+    setPermissionPolicy(nextPolicy);
+    setMode('chat');
+
+    try {
+      if (update.persist) {
+        await updateSettings({
+          permissions: {
+            defaultLevel: update.defaultLevel,
+            overrides: update.overrides.map((override) => ({ ...override })),
+          },
+        });
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `sys-${Date.now()}`,
+          role: 'system',
+          content: update.persist
+            ? '✓ Permissions appliquées et enregistrées dans la configuration globale.'
+            : '✓ Permissions appliquées pour cette session.',
+        },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: 'system',
+          content: `Permissions appliquées en session, mais non enregistrées: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ]);
+    }
+  };
+
+  const handleReset = async () => {
+    try {
+      await resetSettings();
+      session.clear();
+      await closeSession('cancelled');
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -206,6 +330,19 @@ export const App: React.FC<AppProps> = ({
     }
   };
 
+  const handleResumeDecision = async (approved: boolean): Promise<void> => {
+    if (approved) {
+      session.setStatus('active');
+      setResumeApproved(true);
+      if (sessionManager) await sessionManager.saveSession(session);
+      return;
+    }
+
+    session.setStatus('paused');
+    if (sessionManager) await sessionManager.saveSession(session);
+    exit();
+  };
+
   const handleUserInput = async (input: string) => {
     // 1. Handle Slash Commands
     const action = parseSlashCommand(input, {
@@ -215,14 +352,9 @@ export const App: React.FC<AppProps> = ({
       clearMessages: () => {
         setMessages([]);
         session.clear();
+        if (sessionManager) void sessionManager.saveSession(session);
       },
-      exitApp: async () => {
-        session.setStatus('completed');
-        if (sessionManager) {
-          await sessionManager.saveSession(session);
-        }
-        exit();
-      },
+      exitApp: () => { void closeSession('completed'); },
       openModelSelector: () => setMode('model_select'),
       resetConfig: handleReset,
     });
@@ -233,8 +365,24 @@ export const App: React.FC<AppProps> = ({
         return;
       }
 
+      if (action.type === 'open_permissions') {
+        setPermissionPolicy(permissions.getPolicy());
+        setMode('permissions');
+        return;
+      }
+
+      if (action.type === 'open_reasoning_selector') {
+        setMode('reasoning_select');
+        return;
+      }
+
       if (action.type === 'reset') {
         await handleReset();
+        return;
+      }
+
+      if (action.type === 'exit') {
+        await closeSession('completed');
         return;
       }
 
@@ -259,7 +407,7 @@ export const App: React.FC<AppProps> = ({
         session.setTaskSummary(input.slice(0, 80));
       }
 
-      const result = await kernel.run(input, session, { autoVerify: true });
+      const result = await kernel.run(input, session, { autoVerify: true, stream: true });
       const assistantMsgId = `asst-${Date.now()}`;
 
       // Checkpoint step
@@ -296,13 +444,33 @@ export const App: React.FC<AppProps> = ({
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Header projectInfo={projectInfo} modelName={`${currentModelId} (${providerName})`} />
+      <Header projectInfo={projectInfo} modelName={`${currentModelId || 'model not selected'} (${providerName || 'provider not selected'})`} reasoningEffort={reasoningEffort} />
 
-      {mode === 'model_select' ? (
-        <ModelSelector
-          providerName={providerName}
+      {!resumeApproved ? (
+        <ResumeConfirmation
+          sessionId={session.id}
+          warning={initialMessage}
+          onDecision={handleResumeDecision}
+        />
+      ) : mode === 'model_select' ? (
+          <ModelSelector
+            providerName={providerName}
+            provider={activeProvider}
+            discovery={modelDiscovery}
           currentModelId={currentModelId}
           onSelect={handleModelChange}
+          onCancel={() => setMode('chat')}
+        />
+      ) : mode === 'permissions' ? (
+        <PermissionPanel
+          policy={permissionPolicy}
+          onApply={handlePermissionApply}
+          onCancel={() => setMode('chat')}
+        />
+      ) : mode === 'reasoning_select' ? (
+        <ReasoningSelector
+          current={reasoningEffort}
+          onSelect={handleReasoningChange}
           onCancel={() => setMode('chat')}
         />
       ) : (
@@ -319,7 +487,7 @@ export const App: React.FC<AppProps> = ({
               }}
             />
           ) : (
-            <InputPrompt onSubmit={handleUserInput} isDisabled={isBusy} />
+            <InputPrompt onSubmit={handleUserInput} isDisabled={isBusy} fileContextEngine={fileContextEngine} />
           )}
         </>
       )}

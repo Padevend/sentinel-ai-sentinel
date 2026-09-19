@@ -5,9 +5,10 @@
  * All paths are resolved and validated to prevent directory traversal.
  */
 
-import { readFile, readdir, writeFile, unlink, stat } from 'node:fs/promises';
-import { resolve, relative, join, isAbsolute } from 'node:path';
+import { readFile, readdir, writeFile, unlink, stat, realpath } from 'node:fs/promises';
+import { resolve, relative, join, isAbsolute, dirname, basename } from 'node:path';
 import type { ToolResult } from '@sentinel/core';
+import { createPermissionRequest } from '@sentinel/permissions';
 import type { Tool, ToolContext } from './registry.js';
 
 // ─── Path safety ─────────────────────────────────────────────────
@@ -19,6 +20,30 @@ function safePath(projectRoot: string, filePath: string): string {
     throw new Error(`Path "${filePath}" is outside the project root.`);
   }
   return resolved;
+}
+
+async function safePathForOperation(projectRoot: string, filePath: string): Promise<string> {
+  const lexicalPath = safePath(projectRoot, filePath);
+  const rootPath = await realpath(projectRoot);
+  let probe = lexicalPath;
+  const missingSegments: string[] = [];
+  let canonicalPath: string | undefined;
+  while (!canonicalPath) {
+    try {
+      const existing = await realpath(probe);
+      canonicalPath = join(existing, ...missingSegments.reverse());
+    } catch {
+      const parent = dirname(probe);
+      if (parent === probe) throw new Error(`Path "${filePath}" could not be resolved safely.`);
+      missingSegments.push(basename(probe));
+      probe = parent;
+    }
+  }
+  const canonicalRelative = relative(rootPath, canonicalPath);
+  if (canonicalRelative.startsWith('..') || isAbsolute(canonicalRelative)) {
+    throw new Error(`Path "${filePath}" resolves outside the project root.`);
+  }
+  return canonicalPath;
 }
 
 // ─── list_directory ──────────────────────────────────────────────
@@ -40,7 +65,7 @@ export const listDirectoryTool: Tool = {
     const { path: dirPath = '.', recursive = false } = input as { path?: string; recursive?: boolean };
 
     try {
-      const resolved = safePath(context.projectRoot, dirPath);
+      const resolved = await safePathForOperation(context.projectRoot, dirPath);
       const entries = await readdir(resolved, { withFileTypes: true });
       const results: string[] = [];
 
@@ -131,7 +156,7 @@ export const readFileTool: Tool = {
     const { path: filePath, startLine, endLine } = input as { path: string; startLine?: number; endLine?: number };
 
     try {
-      const resolved = safePath(context.projectRoot, filePath);
+      const resolved = await safePathForOperation(context.projectRoot, filePath);
       const content = await readFile(resolved, 'utf-8');
       const lines = content.split('\n');
       const totalLines = lines.length;
@@ -199,7 +224,7 @@ export const searchTextTool: Tool = {
     };
 
     try {
-      const resolved = safePath(context.projectRoot, searchPath);
+      const resolved = await safePathForOperation(context.projectRoot, searchPath);
       const results = await searchInDirectory(resolved, pattern, caseSensitive, maxResults, context.projectRoot);
 
       if (results.length === 0) {
@@ -317,10 +342,12 @@ export const writeFileTool: Tool = {
   permissions: 'confirm_recommended',
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    const permissionError = requireWritePermission('write_file', input, context);
+    if (permissionError) return permissionError;
     const { path: filePath, content } = input as { path: string; content: string };
 
     try {
-      const resolved = safePath(context.projectRoot, filePath);
+      const resolved = await safePathForOperation(context.projectRoot, filePath);
       const { mkdir } = await import('node:fs/promises');
       const { dirname } = await import('node:path');
       await mkdir(dirname(resolved), { recursive: true });
@@ -368,13 +395,15 @@ export const patchFileTool: Tool = {
   permissions: 'confirm_recommended',
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    const permissionError = requireWritePermission('patch_file', input, context);
+    if (permissionError) return permissionError;
     const { path: filePath, patches } = input as {
       path: string;
       patches: Array<{ search: string; replace: string }>;
     };
 
     try {
-      const resolved = safePath(context.projectRoot, filePath);
+      const resolved = await safePathForOperation(context.projectRoot, filePath);
       let content = await readFile(resolved, 'utf-8');
       const applied: string[] = [];
       const failed: string[] = [];
@@ -432,10 +461,12 @@ export const deleteFileTool: Tool = {
   permissions: 'confirm_required',
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    const permissionError = requireWritePermission('delete_file', input, context);
     const { path: filePath } = input as { path: string };
+    if (permissionError) return permissionError;
 
     try {
-      const resolved = safePath(context.projectRoot, filePath);
+      const resolved = await safePathForOperation(context.projectRoot, filePath);
       await unlink(resolved);
       return {
         success: true,
@@ -450,3 +481,37 @@ export const deleteFileTool: Tool = {
     }
   },
 };
+
+function requireWritePermission(
+  toolName: 'write_file' | 'patch_file' | 'delete_file',
+  input: unknown,
+  context: ToolContext,
+): ToolResult | undefined {
+  if (!context.permissionEngine) {
+    return {
+      success: false,
+      output: `Tool "${toolName}" requires an active permission engine.`,
+      error: {
+        code: 'PERMISSION_REQUIRED',
+        message: 'Filesystem writes are denied when no permission engine is attached.',
+        recoverable: true,
+        retryable: false,
+      },
+    };
+  }
+
+  const decision = context.permissionEngine.evaluate(createPermissionRequest(toolName, input));
+  if (decision === 'allow') return undefined;
+  return {
+    success: false,
+    output: decision === 'ask'
+      ? `Permission required before executing tool "${toolName}".`
+      : `Tool "${toolName}" denied by the active permission policy.`,
+    error: {
+      code: decision === 'ask' ? 'PERMISSION_REQUIRED' : 'PERMISSION_DENIED',
+      message: decision === 'ask' ? 'User confirmation is required.' : 'Permission policy denied the request.',
+      recoverable: true,
+      retryable: false,
+    },
+  };
+}

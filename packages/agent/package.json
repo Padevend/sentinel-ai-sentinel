@@ -23,7 +23,8 @@
     "@sentinel/context": "workspace:*",
     "@sentinel/memory": "workspace:*",
     "@sentinel/permissions": "workspace:*",
-    "@sentinel/storage": "workspace:*"
+    "@sentinel/storage": "workspace:*",
+    "@sentinel/skills": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

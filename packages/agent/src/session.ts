@@ -31,7 +31,7 @@ export class AgentSession {
   public readonly id: SessionId;
   public readonly projectId: ProjectId;
   public readonly workspaceId: WorkspaceId;
-  public readonly createdAt: number;
+  public createdAt: number;
   public updatedAt: number;
   public status: SessionStatus = 'active';
   public taskSummary?: string;
@@ -53,8 +53,8 @@ export class AgentSession {
     this.id = (options?.sessionId || `sess_${now}_${Math.random().toString(36).slice(2, 7)}`) as SessionId;
     this.projectId = (options?.projectId || 'proj_default') as ProjectId;
     this.workspaceId = (options?.workspaceId || 'ws_default') as WorkspaceId;
-    this.modelId = options?.modelId || 'gemini-3.1-pro';
-    this.providerName = options?.providerName || 'Google AI';
+    this.modelId = options?.modelId ?? '';
+    this.providerName = options?.providerName ?? '';
     this.createdAt = now;
     this.updatedAt = now;
   }
@@ -166,35 +166,21 @@ export class AgentSession {
     };
   }
 
+  private restore(stored: StoredSession): void {
+    this.createdAt = stored.createdAt;
+    this.updatedAt = stored.updatedAt;
+    this.status = stored.status;
+    this.taskSummary = stored.taskSummary;
+    this.state = { ...stored.state, completedSteps: [...stored.state.completedSteps], pendingSteps: [...stored.state.pendingSteps] };
+    this.totalUsage = { ...stored.totalUsage };
+    this.messages.push(...stored.messages.map((message) => ({ ...message, timestamp: message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp) })));
+    this.checkpoints.push(...stored.checkpoints.map((checkpoint) => ({ ...checkpoint, state: { ...checkpoint.state, completedSteps: [...checkpoint.state.completedSteps], pendingSteps: [...checkpoint.state.pendingSteps] }, filesModified: [...checkpoint.filesModified] })));
+    for (const filePath of stored.filesModified) this.filesModified.add(filePath);
+  }
+
   static fromStoredSession(stored: StoredSession, memory?: MemoryEngine): AgentSession {
-    const session = new AgentSession(
-      {
-        sessionId: stored.id,
-        projectId: stored.projectId,
-        workspaceId: stored.workspaceId,
-        modelId: stored.modelId,
-        providerName: stored.providerName,
-      },
-      memory,
-    );
-
-    (session as any).createdAt = stored.createdAt;
-    session.updatedAt = stored.updatedAt;
-    session.status = stored.status;
-    session.taskSummary = stored.taskSummary;
-    (session as any).state = stored.state;
-    (session as any).totalUsage = stored.totalUsage;
-
-    for (const msg of stored.messages) {
-      session.addMessage(msg);
-    }
-    for (const chk of stored.checkpoints) {
-      (session as any).checkpoints.push(chk);
-    }
-    for (const f of stored.filesModified) {
-      session.recordModifiedFile(f);
-    }
-
+    const session = new AgentSession({ sessionId: stored.id, projectId: stored.projectId, workspaceId: stored.workspaceId, modelId: stored.modelId, providerName: stored.providerName }, memory);
+    session.restore(stored);
     return session;
   }
 }

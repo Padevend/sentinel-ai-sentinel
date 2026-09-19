@@ -6,7 +6,9 @@
  */
 
 import { spawn } from 'node:child_process';
+import { relative, resolve, isAbsolute } from 'node:path';
 import type { ToolResult } from '@sentinel/core';
+import { createPermissionRequest } from '@sentinel/permissions';
 import type { Tool, ToolContext } from './registry.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000; // 1 minute
@@ -27,15 +29,55 @@ export const executeCommandTool: Tool = {
   permissions: 'confirm_recommended',
 
   async execute(input: unknown, context: ToolContext): Promise<ToolResult> {
+    if (!context.permissionEngine) {
+      return {
+        success: false,
+        output: 'Shell execution requires an active permission engine.',
+        error: {
+          code: 'PERMISSION_REQUIRED',
+          message: 'Shell commands are denied when no permission engine is attached.',
+          recoverable: true,
+          retryable: false,
+        },
+      };
+    }
+
+    const permissionDecision = context.permissionEngine.evaluate(createPermissionRequest('execute_command', input));
+    if (permissionDecision !== 'allow') {
+      return {
+        success: false,
+        output: permissionDecision === 'ask'
+          ? 'Permission required before executing a shell command.'
+          : 'Shell command denied by the active permission policy.',
+        error: {
+          code: permissionDecision === 'ask' ? 'PERMISSION_REQUIRED' : 'PERMISSION_DENIED',
+          message: permissionDecision === 'ask' ? 'User confirmation is required.' : 'Permission policy denied the request.',
+          recoverable: true,
+          retryable: false,
+        },
+      };
+    }
+
     const {
       command,
       cwd,
       timeout = DEFAULT_TIMEOUT_MS,
     } = input as { command: string; cwd?: string; timeout?: number };
 
-    const workDir = cwd
-      ? (await import('node:path')).resolve(context.projectRoot, cwd)
-      : context.projectRoot;
+    const workDir = cwd ? resolve(context.projectRoot, cwd) : context.projectRoot;
+    const relativeWorkDir = relative(context.projectRoot, workDir);
+    if (isAbsolute(relativeWorkDir) || relativeWorkDir.startsWith('..')) {
+      return {
+        success: false,
+        output: `Command rejected: working directory "${cwd}" is outside the project root.`,
+        error: {
+          code: 'WORKSPACE_ESCAPE',
+          message: 'Shell working directory must remain inside the project root.',
+          recoverable: false,
+          retryable: false,
+        },
+      };
+    }
 
     try {
       const result = await runCommand(command, workDir, timeout, context.signal);

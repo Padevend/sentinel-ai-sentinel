@@ -27,6 +27,8 @@ export class ProviderRegistry {
     this.register('gemini', (config) => new GoogleProvider(config));
     this.register('openai', (config) => new OpenAIProvider(config));
     this.register('anthropic', (config) => new AnthropicProvider(config));
+    this.register('openrouter', (config) => new OpenAIProvider(config));
+    this.register('ollama', (config) => new OpenAIProvider(config));
     this.register('custom', (config) => new OpenAIProvider(config));
   }
 
@@ -76,7 +78,7 @@ export function createProvider(resolvedConfig: ResolvedConfig): LLMProvider {
 
   const providerConfig: ProviderConfig = {
     provider: modelConfig.provider,
-    model: modelConfig.model,
+    model: modelConfig.modelId ?? modelConfig.model,
     apiKey: resolvedConfig.secrets.apiKey,
     baseUrl: modelConfig.baseUrl,
     maxTokens: modelConfig.maxTokens,

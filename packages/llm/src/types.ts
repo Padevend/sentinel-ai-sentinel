@@ -13,6 +13,38 @@ import type {
   FinishReason,
 } from '@sentinel/core';
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+
+export type ChatMessage = Message;
+
+export interface CompletionParams {
+  readonly modelId: string;
+  readonly messages: readonly ChatMessage[];
+  readonly tools?: readonly ToolDefinition[];
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+  readonly signal?: AbortSignal;
+  readonly systemPrompt?: string;
+}
+
+export interface ModelInfo {
+  readonly id: string;
+  readonly displayName?: string;
+  readonly contextLength?: number;
+  readonly supportsReasoningEffort: boolean;
+  readonly raw: unknown;
+}
+
+export type StreamEvent = ChatStreamChunk;
+
+export interface ModelProvider {
+  readonly id: string;
+  listModels(signal?: AbortSignal): Promise<readonly ModelInfo[]>;
+  complete(params: CompletionParams): AsyncIterable<StreamEvent>;
+  supportsNativeReasoningEffort(): boolean;
+}
+
 // ─── Provider Interface ──────────────────────────────────────────
 
 /**
@@ -20,12 +52,24 @@ import type {
  * Supports both blocking and streaming modes, tool calling,
  * cancellation, and token usage reporting.
  */
-export interface LLMProvider {
-  /** Human-readable provider name (e.g. "OpenAI", "Anthropic") */
+export interface LLMProvider extends ModelProvider {
+  /** Stable provider identifier used by configuration and policy routing. */
+  readonly id: string;
+
+  /** Human-readable provider name supplied by the adapter. */
   readonly name: string;
 
-  /** Specific model identifier (e.g. "gpt-4o", "claude-sonnet-4-20250514") */
+  /** Specific model identifier returned by the provider listing endpoint. */
   readonly modelId: string;
+
+  /** Discover models exposed by the configured provider endpoint. */
+  listModels(signal?: AbortSignal): Promise<readonly ModelInfo[]>;
+
+  /** Contract-compatible streaming completion entry point. */
+  complete(params: CompletionParams): AsyncIterable<StreamEvent>;
+
+  /** Whether this provider can receive a native reasoning-effort parameter. */
+  supportsNativeReasoningEffort(): boolean;
 
   /** Blocking chat completion */
   chat(request: ChatRequest): Promise<ChatResponse>;
@@ -43,6 +87,7 @@ export interface ChatRequest {
   readonly maxTokens?: number;
   readonly signal?: AbortSignal;
   readonly systemPrompt?: string;
+  readonly reasoningEffort?: ReasoningEffort;
 }
 
 export interface ChatResponse {
@@ -100,7 +145,7 @@ export interface DoneChunk {
 
 export interface ProviderConfig {
   readonly provider: string;
-  readonly model: string;
+  readonly model?: string;
   readonly apiKey: string;
   readonly baseUrl?: string;
   readonly maxTokens?: number;

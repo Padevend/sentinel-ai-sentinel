@@ -12,6 +12,8 @@ import {
   deleteFileTool,
   type ToolContext,
 } from '../index.js';
+import { PermissionManager } from '@sentinel/permissions';
+import { createPermissionRequest } from '@sentinel/permissions';
 
 const TEST_DIR = join(process.cwd(), '.tmp-tools-test');
 
@@ -20,11 +22,16 @@ describe('@sentinel/tools', () => {
   const context: ToolContext = {
     projectRoot: TEST_DIR,
     eventBus,
+    permissionEngine: new PermissionManager(),
   };
 
   beforeEach(async () => {
     await mkdir(TEST_DIR, { recursive: true });
     await writeFile(join(TEST_DIR, 'test.txt'), 'line 1\nline 2 with searchterm\nline 3\n');
+    context.permissionEngine?.recordSessionOverride(
+      createPermissionRequest('patch_file', { path: 'test.txt' }),
+      'allow',
+    );
   });
 
   afterEach(async () => {
@@ -69,5 +76,20 @@ describe('@sentinel/tools', () => {
     const result = await readFileTool.execute({ path: '../../etc/passwd' }, context);
     expect(result.success).toBe(false);
     expect(result.output).toContain('outside the project root');
+  });
+
+  it('returns a structured error for invalid registry input without executing a tool', async () => {
+    const registry = new ToolRegistry();
+    registry.register(readFileTool);
+    const result = await registry.execute('read_file', {}, { ...context, permissionEngine: new PermissionManager() });
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('INVALID_TOOL_INPUT');
+  });
+
+  it('does not write when permission has not been granted', async () => {
+    const registry = new ToolRegistry();
+    registry.register(writeFileTool);
+    const result = await registry.execute('write_file', { path: 'blocked.txt', content: 'nope' }, { ...context, permissionEngine: new PermissionManager() });
+    expect(result.error?.code).toBe('PERMISSION_REQUIRED');
   });
 });

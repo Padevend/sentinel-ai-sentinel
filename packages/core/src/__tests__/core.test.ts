@@ -43,7 +43,7 @@ describe('@sentinel/core', () => {
 
   it('should track metrics accurately', () => {
     const metrics = new MetricsCollector();
-    metrics.recordModelCall(120, { promptTokens: 50, completionTokens: 20, totalTokens: 70 }, 'gpt-4o');
+    metrics.recordModelCall(120, { promptTokens: 50, completionTokens: 20, totalTokens: 70 }, 'test-model');
     metrics.recordToolCall('read_file', 15, true);
     metrics.recordToolCall('read_file', 12, true);
     metrics.recordToolCall('write_file', 30, false);

@@ -3,13 +3,19 @@ import { AgentKernel, AgentSession } from '../index.js';
 import { createDefaultToolRegistry } from '@sentinel/tools';
 import { PermissionManager } from '@sentinel/permissions';
 import type { LLMProvider, ChatRequest, ChatResponse, ChatStreamChunk } from '@sentinel/llm';
+import type { AgentEvent } from '../types.js';
 import type { ToolCallId } from '@sentinel/core';
 
 class MockLLMProvider implements LLMProvider {
+  readonly id = 'mock';
   readonly name = 'Mock';
-  readonly modelId = 'mock-v1';
+  readonly modelId = 'test-model';
 
   private callCount = 0;
+
+  async listModels(): Promise<readonly never[]> { return []; }
+
+  supportsNativeReasoningEffort(): boolean { return false; }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     this.callCount++;
@@ -67,5 +73,35 @@ describe('@sentinel/agent', () => {
     expect(result.iterations).toBe(2);
     expect(result.toolResults).toHaveLength(1);
     expect(result.finalResponse).toContain('analyzed the project structure');
+  });
+
+  it('exposes streamed public events through the AgentRun async iterable', async () => {
+    const kernel = new AgentKernel({
+      projectRoot: process.cwd(),
+      provider: new MockLLMProvider(),
+      tools: createDefaultToolRegistry(),
+      permissions: new PermissionManager(),
+      maxIterations: 5,
+    });
+    const events: AgentEvent[] = [];
+    for await (const event of kernel.run('Stream this response', new AgentSession())) {
+      events.push(event);
+    }
+
+    expect(events.some((event) => event.type === 'text_delta')).toBe(true);
+  });
+
+  it('returns a cancelled result when the caller signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const kernel = new AgentKernel({
+      projectRoot: process.cwd(),
+      provider: new MockLLMProvider(),
+      tools: createDefaultToolRegistry(),
+      permissions: new PermissionManager(),
+    });
+
+    const result = await kernel.run('Cancel this response', new AgentSession(), { signal: controller.signal });
+    expect(result.state).toBe('cancelled');
   });
 });

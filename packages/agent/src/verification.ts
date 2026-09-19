@@ -8,20 +8,37 @@
 import { executeCommandTool } from '@sentinel/tools';
 import type { ToolContext } from '@sentinel/tools';
 import { SentinelEventBus } from '@sentinel/core';
+import type { PermissionManager } from '@sentinel/permissions';
 import type { VerificationResult } from './types.js';
 
 export class VerificationEngine {
-  constructor(private readonly projectRoot: string) {}
+  constructor(
+    private readonly projectRoot: string,
+    private readonly permissions: PermissionManager,
+  ) {}
 
   /**
    * Run verification tests for the project.
    */
   async verify(testCommand?: string, signal?: AbortSignal): Promise<VerificationResult> {
     const command = testCommand || (await this.detectTestCommand());
+    const permissionCheck = this.permissions.check('execute_command', { command });
+    if (permissionCheck.decision !== 'allow') {
+      const approved = await this.permissions.requestConfirmation(permissionCheck);
+      if (!approved) {
+        return {
+          passed: false,
+          output: `Verification was not run: permission denied for "${command}".`,
+        };
+      }
+      this.permissions.recordSessionOverride(permissionCheck.request, 'allow');
+    }
+
     const context: ToolContext = {
       projectRoot: this.projectRoot,
       eventBus: new SentinelEventBus(),
       signal,
+      permissionEngine: this.permissions,
     };
 
     const result = await executeCommandTool.execute({ command }, context);

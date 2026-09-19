@@ -9,7 +9,7 @@
  */
 
 export class PromptPlanner {
-  static buildSystemPrompt(contextPrompt?: string, memoryPrompt?: string): string {
+  static buildSystemPrompt(contextPrompt?: string, memoryPrompt?: string, skillsPrompt?: string): string {
     return `You are Sentinel, a next-generation open source AI software engineering agent.
 Your mission is to understand, navigate, build, test, and debug software projects accurately.
 
@@ -23,6 +23,7 @@ CORE PRINCIPLES:
 
 ${contextPrompt ? `\n--- PROJECT CONTEXT ---\n${contextPrompt}\n` : ''}
 ${memoryPrompt ? `\n--- SESSION MEMORY ---\n${memoryPrompt}\n` : ''}
+${skillsPrompt ? `\n--- AVAILABLE SKILLS ---\n${skillsPrompt}\n` : ''}
 
 When user asks a question or gives a task:
 1. Inspect necessary files first.

@@ -96,6 +96,9 @@ export type {
   RuntimeSecrets,
   ResolvedConfig,
   SettingsData,
+  McpServerConfig,
+  McpConfig,
+  SkillsConfig,
 } from './config.js';
 
 // Doctor & Diagnostics
@@ -107,6 +110,7 @@ export type {
   CheckStatus,
   DiagnosticItem,
   DoctorReport,
+  DoctorOptions,
 } from './doctor.js';
 
 // Logger

@@ -1,14 +1,8 @@
-/**
- * @sentinel/cli — Tool Activity Component
- *
- * Displays ongoing and completed operational tool actions:
- * ◉ Reading package.json
- * ✓ Found application entry point
- * ✗ 2 tests failed
- */
+/** @sentinel/cli - Tool activity display */
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { THEME } from '../theme.js';
 
 export interface ActivityItem {
   id: string;
@@ -16,33 +10,16 @@ export interface ActivityItem {
   message: string;
 }
 
-interface ToolActivityProps {
-  activities: readonly ActivityItem[];
-}
+interface ToolActivityProps { activities: readonly ActivityItem[]; }
 
 export const ToolActivity: React.FC<ToolActivityProps> = ({ activities }) => {
   if (activities.length === 0) return null;
-
   return (
-    <Box flexDirection="column" marginY={1} paddingLeft={1}>
+    <Box flexDirection="column" marginY={0} paddingLeft={1}>
       {activities.map((item) => {
-        let icon = '◉ ';
-        let color = 'yellow';
-
-        if (item.type === 'success') {
-          icon = '✓ ';
-          color = 'green';
-        } else if (item.type === 'failure') {
-          icon = '✗ ';
-          color = 'red';
-        }
-
-        return (
-          <Box key={item.id}>
-            <Text color={color}>{icon}</Text>
-            <Text color="gray">{item.message}</Text>
-          </Box>
-        );
+        const icon = item.type === 'success' ? '✓ ' : item.type === 'failure' ? '✗ ' : '· ';
+        const color = item.type === 'success' ? THEME.green : item.type === 'failure' ? THEME.danger : THEME.warning;
+        return <Box key={item.id}><Text color={color}>{icon}</Text><Text color={THEME.muted}>{item.message}</Text></Box>;
       })}
     </Box>
   );

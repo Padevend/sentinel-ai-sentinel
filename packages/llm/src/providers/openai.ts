@@ -15,31 +15,104 @@ import { ModelError } from '@sentinel/core';
 import type { Message, ToolDefinition, ToolCall, ToolCallId, TokenUsage } from '@sentinel/core';
 import type {
   LLMProvider,
+  CompletionParams,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
   ProviderConfig,
+  ModelInfo,
 } from '../types.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
 const MAX_RETRIES = 3;
 
 export class OpenAIProvider implements LLMProvider {
-  readonly name = 'OpenAI';
+  readonly id: string;
+  readonly name: string;
   readonly modelId: string;
   private readonly client: OpenAI;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
 
   constructor(config: ProviderConfig) {
-    this.modelId = config.model;
+    this.id = config.provider.toLowerCase();
+    this.name = this.id === 'openrouter' ? 'OpenRouter' : this.id === 'ollama' ? 'Ollama' : this.id === 'custom' ? 'Custom OpenAI-compatible' : 'OpenAI';
+    this.modelId = config.model ?? '';
+    this.apiKey = config.apiKey;
+    const configuredBaseUrl = config.baseUrl?.replace(/\/+$/, '');
+    if (configuredBaseUrl) {
+      this.baseUrl = configuredBaseUrl;
+    } else if (this.id === 'openrouter') {
+      this.baseUrl = DEFAULT_OPENROUTER_BASE_URL;
+    } else if (this.id === 'ollama') {
+      this.baseUrl = `${DEFAULT_OLLAMA_BASE_URL}/v1`;
+    } else {
+      this.baseUrl = DEFAULT_BASE_URL;
+    }
     this.client = new OpenAI({
-      apiKey: config.apiKey,
-      baseURL: config.baseUrl ?? DEFAULT_BASE_URL,
+      // The SDK requires a non-empty constructor value even for local or
+      // public model-listing endpoints. Listing itself never sends this value
+      // when the user did not configure credentials.
+      apiKey: config.apiKey || 'sentinel-no-auth',
+      baseURL: this.baseUrl,
       maxRetries: MAX_RETRIES,
+    });
+  }
+
+  async listModels(signal?: AbortSignal): Promise<readonly ModelInfo[]> {
+    if (this.id === 'ollama') {
+      return this.listOllamaModels(signal);
+    }
+
+    const response = await fetch(`${this.baseUrl}/models`, {
+      method: 'GET',
+      headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : undefined,
+      signal,
+    });
+    if (!response.ok) {
+      throw new ModelError(`Model listing failed for ${this.name} (${response.status})`, {
+        code: 'MODEL_LIST_FAILED',
+        retryable: response.status === 429 || response.status >= 500,
+      });
+    }
+
+    const payload: unknown = await response.json();
+    const records = extractModelRecords(payload);
+    return records.reduce<ModelInfo[]>((models, record) => {
+        const id = readString(record, 'id');
+        if (!id) return models;
+        models.push({
+          id,
+          displayName: readString(record, 'name') ?? id,
+          contextLength: readNumber(record, 'context_length') ?? readNumber(record, 'contextWindow'),
+          supportsReasoningEffort: this.supportsNativeReasoningEffort(),
+          raw: record,
+        });
+        return models;
+      }, []);
+  }
+
+  supportsNativeReasoningEffort(): boolean {
+    return this.id === 'openai';
+  }
+
+  complete(params: CompletionParams): AsyncIterable<ChatStreamChunk> {
+    return this.chatStream({
+      messages: params.messages,
+      tools: params.tools,
+      reasoningEffort: params.reasoningEffort,
+      maxTokens: params.maxTokens,
+      temperature: params.temperature,
+      signal: params.signal,
+      systemPrompt: params.systemPrompt,
     });
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
+      this.assertModelSelected();
       const response = await this.client.chat.completions.create(
         {
           model: this.modelId,
@@ -47,6 +120,7 @@ export class OpenAIProvider implements LLMProvider {
           tools: request.tools ? this.mapTools(request.tools) : undefined,
           temperature: request.temperature,
           max_tokens: request.maxTokens,
+          reasoning_effort: this.mapReasoningEffort(request),
         },
         { signal: request.signal },
       );
@@ -61,7 +135,7 @@ export class OpenAIProvider implements LLMProvider {
       const toolCalls: ToolCall[] = (choice.message.tool_calls ?? []).map((tc) => ({
         id: tc.id as ToolCallId,
         toolName: tc.function.name,
-        input: JSON.parse(tc.function.arguments) as unknown,
+        input: parseToolArguments(tc.function.arguments),
       }));
 
       return {
@@ -88,6 +162,7 @@ export class OpenAIProvider implements LLMProvider {
 
   async *chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk> {
     try {
+      this.assertModelSelected();
       const stream = await this.client.chat.completions.create(
         {
           model: this.modelId,
@@ -95,6 +170,7 @@ export class OpenAIProvider implements LLMProvider {
           tools: request.tools ? this.mapTools(request.tools) : undefined,
           temperature: request.temperature,
           max_tokens: request.maxTokens,
+          reasoning_effort: this.mapReasoningEffort(request),
           stream: true,
           stream_options: { include_usage: true },
         },
@@ -219,6 +295,45 @@ export class OpenAIProvider implements LLMProvider {
     return messages;
   }
 
+  private mapReasoningEffort(request: ChatRequest): 'low' | 'medium' | 'high' | undefined {
+    if (!request.reasoningEffort || !this.supportsNativeReasoningEffort()) return undefined;
+    return request.reasoningEffort === 'max' ? 'high' : request.reasoningEffort;
+  }
+
+  private assertModelSelected(): void {
+    if (!this.modelId) {
+      throw new ModelError('No model selected. Discover models from the configured provider first.', {
+        code: 'MODEL_NOT_SELECTED',
+        retryable: false,
+      });
+    }
+  }
+
+  private async listOllamaModels(signal?: AbortSignal): Promise<readonly ModelInfo[]> {
+    const root = this.baseUrl.endsWith('/v1') ? this.baseUrl.slice(0, -3) : this.baseUrl;
+    const response = await fetch(`${root}/api/tags`, { method: 'GET', signal });
+    if (!response.ok) {
+      throw new ModelError(`Model listing failed for Ollama (${response.status})`, {
+        code: 'MODEL_LIST_FAILED',
+        retryable: response.status >= 500,
+      });
+    }
+    const payload: unknown = await response.json();
+    const models = isRecord(payload) && Array.isArray(payload['models']) ? payload['models'] : [];
+    return models.filter(isRecord).reduce<ModelInfo[]>((result, record) => {
+        const id = readString(record, 'name');
+        if (!id) return result;
+        result.push({
+          id,
+          displayName: id,
+          contextLength: readNumber(record, 'context_length'),
+          supportsReasoningEffort: false,
+          raw: record,
+        });
+        return result;
+      }, []);
+  }
+
   // ─── Tool mapping ───────────────────────────────────────────────
 
   private mapTools(tools: readonly ToolDefinition[]): ChatCompletionTool[] {
@@ -256,5 +371,32 @@ export class OpenAIProvider implements LLMProvider {
       return true;
     }
     return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function extractModelRecords(value: unknown): readonly Record<string, unknown>[] {
+  if (!isRecord(value) || !Array.isArray(value['data'])) return [];
+  return value['data'].filter(isRecord);
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseToolArguments(argumentsText: string): unknown {
+  try {
+    return JSON.parse(argumentsText) as unknown;
+  } catch {
+    return argumentsText;
   }
 }

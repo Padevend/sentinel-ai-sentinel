@@ -8,7 +8,7 @@
 import { access, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PlatformService } from './platform.js';
-import { loadSettings } from './config.js';
+import { loadSettings, SecretStore } from './config.js';
 
 export type CheckStatus = 'ok' | 'warning' | 'error';
 
@@ -28,8 +28,13 @@ export interface DoctorReport {
   readonly hasWarnings: boolean;
 }
 
+export interface DoctorOptions {
+  readonly providerName?: string;
+  readonly providerPing?: () => Promise<boolean>;
+}
+
 export class DoctorEngine {
-  static async diagnose(projectRoot = process.cwd()): Promise<DoctorReport> {
+  static async diagnose(projectRoot = process.cwd(), options: DoctorOptions = {}): Promise<DoctorReport> {
     const items: DiagnosticItem[] = [];
     const platform = PlatformService.getInstance();
     const paths = platform.getPaths();
@@ -49,6 +54,18 @@ export class DoctorEngine {
       status: 'ok',
       message: osInfo.defaultShell,
     });
+
+    try {
+      const shell = osInfo.defaultShell;
+      const args = osInfo.isWindows ? ['/c', 'echo sentinel-doctor'] : ['-c', 'printf sentinel-doctor'];
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+      await execFileAsync(shell, args, { timeout: 10_000, windowsHide: true });
+      items.push({ category: 'Environment', name: 'Usable Shell', status: 'ok', message: 'The configured shell executed a non-destructive probe.' });
+    } catch (err) {
+      items.push({ category: 'Environment', name: 'Usable Shell', status: 'error', message: `Shell probe failed: ${err instanceof Error ? err.message : String(err)}`, recommendation: 'Configure a usable shell in the operating system environment.' });
+    }
 
     items.push({
       category: 'Environment',
@@ -76,6 +93,17 @@ export class DoctorEngine {
       });
     }
 
+    for (const directory of [paths.configDir, paths.dataDir, paths.cacheDir, paths.logsDir]) {
+      const probe = join(directory, '.doctor_permission_probe');
+      try {
+        await writeFile(probe, 'ok', { encoding: 'utf8' });
+        await rm(probe, { force: true });
+        items.push({ category: 'Filesystem', name: `Write access: ${directory}`, status: 'ok', message: 'Writable and removable.' });
+      } catch (err) {
+        items.push({ category: 'Filesystem', name: `Write access: ${directory}`, status: 'error', message: `Write probe failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
     // 3. Write Permissions Test
     const testFile = join(paths.cacheDir, '.doctor_write_test');
     try {
@@ -95,6 +123,21 @@ export class DoctorEngine {
         message: `Atomic write failed: ${err instanceof Error ? err.message : String(err)}`,
         recommendation: 'Ensure write access to ~/sentinel/cache directory',
       });
+    }
+
+    if (options.providerPing) {
+      try {
+        const available = await options.providerPing();
+        items.push({
+          category: 'Configuration',
+          name: 'Configured Provider Availability',
+          status: available ? 'ok' : 'error',
+          message: available ? `${options.providerName ?? 'Configured provider'} responded to model discovery.` : `${options.providerName ?? 'Configured provider'} did not respond to model discovery.`,
+          recommendation: available ? undefined : 'Check credentials, endpoint and network availability.',
+        });
+      } catch (err) {
+        items.push({ category: 'Configuration', name: 'Configured Provider Availability', status: 'error', message: `Provider probe failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
     }
 
     // 4. SQLite Database — probe via filesystem (no direct better-sqlite3 dependency here)
@@ -120,12 +163,13 @@ export class DoctorEngine {
     // 5. Configuration & Credentials
     try {
       const settings = await loadSettings();
-      if (settings?.model?.apiKey && settings.model.apiKey.trim().length > 0) {
+      const configuredSecret = SecretStore.resolveSecret(settings?.model?.provider ?? 'google', settings?.model?.apiKey).apiKey;
+      if (configuredSecret) {
         items.push({
           category: 'Configuration',
           name: 'LLM Credentials',
           status: 'ok',
-          message: `Configured provider: ${settings.model.provider} (model: ${settings.model.model})`,
+          message: `Configured provider: ${settings?.model?.provider ?? 'unknown'} (model: ${settings?.model?.modelId ?? settings?.model?.model ?? 'discovered at runtime'})`,
         });
       } else if (
         process.env['SENTINEL_API_KEY'] ||

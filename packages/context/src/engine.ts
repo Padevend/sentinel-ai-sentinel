@@ -7,16 +7,22 @@
 
 import type { ContextItem, ProjectInfo } from '@sentinel/core';
 import type { IndexedFile, StructuralSymbol } from '@sentinel/project';
+import { StaticPreAnalyzer, StructuralTwinQuery } from "@sentinel/project";
 import type { AssembledContext, ContextQuery } from './types.js';
 import { RelevanceScorer } from './relevance.js';
 import { TokenBudget } from './token-budget.js';
 
 export class ContextEngine {
+  private readonly preAnalyzer?: StaticPreAnalyzer;
+
   constructor(
     private readonly projectInfo: ProjectInfo,
     private readonly files: readonly IndexedFile[],
     private readonly symbols: readonly StructuralSymbol[],
-  ) {}
+    private readonly structuralTwin?: StructuralTwinQuery,
+  ) {
+    if (structuralTwin) this.preAnalyzer = new StaticPreAnalyzer(structuralTwin);
+  }
 
   /**
    * Builds the assembled context for an incoming user query.
@@ -67,6 +73,17 @@ export class ContextEngine {
       }
     }
 
+    const twin = query.structuralTwin ?? this.structuralTwin;
+    const preAnalyzer = twin === this.structuralTwin ? this.preAnalyzer : twin ? new StaticPreAnalyzer(twin) : undefined;
+    const preAnalysis = preAnalyzer?.analyze(query.query);
+    if (preAnalysis) {
+      const remainingTokens = Math.max(0, maxTokens - usedTokens);
+      if (remainingTokens > 0) {
+        const boundedPreAnalysis = TokenBudget.truncate(preAnalysis.formatted, remainingTokens);
+        promptParts.push(boundedPreAnalysis);
+        usedTokens += TokenBudget.estimate(boundedPreAnalysis);
+      }
+    }
     const formattedPrompt = promptParts.join('\n\n');
 
     return {
@@ -74,6 +91,8 @@ export class ContextEngine {
       relevantItems,
       estimatedTokens: usedTokens,
       formattedPrompt,
+      preAnalysis,
+      exploratoryReadsAvoided: preAnalysis?.exploratoryReadsAvoided ?? 0,
     };
   }
 

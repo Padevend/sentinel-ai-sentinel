@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SQLiteRepositories } from '@sentinel/storage';
 import { SessionManager, AgentSession } from '../index.js';
+import type { ProjectId } from '@sentinel/core';
 
 describe('SessionManager & Recovery', () => {
   const testDbPath = join(tmpdir(), `sentinel-agent-test-${Date.now()}.db`);
@@ -23,8 +24,8 @@ describe('SessionManager & Recovery', () => {
 
   it('should create and persist a new session', async () => {
     const session = await manager.createSession({
-      projectId: 'proj_unit_test' as any,
-      modelId: 'gemini-3.1-pro',
+      projectId: 'proj_unit_test' as ProjectId,
+      modelId: 'test-model',
       providerName: 'Google AI',
     });
 
@@ -38,8 +39,8 @@ describe('SessionManager & Recovery', () => {
 
   it('should create checkpoints and reconstruct context', async () => {
     const session = new AgentSession({
-      projectId: 'proj_unit_test' as any,
-      modelId: 'gemini-3.1-pro',
+      projectId: 'proj_unit_test' as ProjectId,
+      modelId: 'test-model',
       providerName: 'Google AI',
     });
 

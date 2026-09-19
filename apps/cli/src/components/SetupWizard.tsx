@@ -11,7 +11,7 @@ import TextInput from "ink-text-input";
 import { saveSettings, type SettingsData } from "@sentinel/core";
 import {
   PROVIDERS,
-  getAvailableModels,
+  ProviderRegistry,
   type ProviderInfo,
   type ModelInfo,
 } from "@sentinel/llm";
@@ -29,12 +29,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [modelInput, setModelInput] = useState("");
   const [selectedModelIndex, setSelectedModelIndex] = useState(0);
+  const [availableModels, setAvailableModels] = useState<readonly ModelInfo[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const chosenProvider: ProviderInfo =
     PROVIDERS[selectedProviderIndex] ?? PROVIDERS[0]!;
-  const availableModels: ModelInfo[] = getAvailableModels(chosenProvider.id);
-
   // Keyboard navigation for menu steps
   useInput((input, key) => {
     if (step === "provider") {
@@ -51,15 +51,13 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
       if (key.return) {
         setErrorMessage("");
         if (chosenProvider.requiresBaseUrl) {
-          setBaseUrlInput(
-            chosenProvider.defaultBaseUrl ?? "https://openrouter.ai/api/v1",
-          );
+          setBaseUrlInput(chosenProvider.defaultBaseUrl ?? "");
           setStep("base_url");
         } else {
           setStep("api_key");
         }
       }
-    } else if (step === "model") {
+    } else if (step === "model" && chosenProvider.id !== "custom") {
       if (key.upArrow) {
         setSelectedModelIndex((prev) =>
           prev > 0 ? prev - 1 : availableModels.length - 1,
@@ -73,14 +71,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
       if (key.return) {
         const chosenModel =
           availableModels[selectedModelIndex] ?? availableModels[0];
-        handleFinish(chosenModel ? chosenModel.id : "gemini-2.5-flash");
+        if (chosenModel) handleFinish(chosenModel.id);
       }
     }
   });
 
   const handleBaseUrlSubmit = (url: string) => {
     const trimmed = url.trim();
-    if (!trimmed) {
+    try { new URL(trimmed); } catch { setErrorMessage("Base URL must be a valid URL."); return; }
+    if (!trimmed && chosenProvider.id !== "custom" && chosenProvider.id !== "ollama") {
       setErrorMessage("Base URL cannot be empty.");
       return;
     }
@@ -88,9 +87,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
     setStep("api_key");
   };
 
-  const handleApiKeySubmit = (keyStr: string) => {
+  const handleApiKeySubmit = async (keyStr: string) => {
     const trimmed = keyStr.trim();
-    if (!trimmed) {
+    if (!trimmed && chosenProvider.id !== "custom") {
       setErrorMessage("API key cannot be empty.");
       return;
     }
@@ -98,6 +97,20 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
     setApiKeyInput(trimmed);
     setSelectedModelIndex(0);
     setStep("model");
+    setIsLoadingModels(true);
+    try {
+      const provider = new ProviderRegistry().create({
+        provider: chosenProvider.id,
+        apiKey: trimmed,
+        baseUrl: chosenProvider.requiresBaseUrl ? baseUrlInput : chosenProvider.defaultBaseUrl,
+      });
+      setAvailableModels(await provider.listModels());
+    } catch (error) {
+      setAvailableModels([]);
+      setErrorMessage(`Could not discover provider models: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsLoadingModels(false);
+    }
   };
 
   const handleFinish = async (modelId: string) => {
@@ -105,7 +118,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
     const settings: SettingsData = {
       model: {
         provider: chosenProvider.id,
-        model: modelId,
+        modelId,
         apiKey: apiKeyInput,
         baseUrl: chosenProvider.requiresBaseUrl ? baseUrlInput : undefined,
       },
@@ -123,10 +136,14 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
   };
 
   const handleModelSubmit = (modelId: string) => {
+    const trimmed = modelId.trim();
+    if (!trimmed) {
+      setErrorMessage("Model identifier cannot be empty.");
+      return;
+    }
     setErrorMessage("");
-    handleFinish(modelId);
+    handleFinish(trimmed);
   };
-
   return (
     <Box flexDirection="column" padding={1}>
       {/* Banner */}
@@ -227,12 +244,12 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
           </Box>
           <Box marginBottom={1}>
             <Text color="gray">
-              Keys are securely stored in ~/.sentinel/settings.json.
+              Credentials are stored in Sentinel’s protected secrets store. Leave blank for local providers.
             </Text>
           </Box>
           <Box marginBottom={1}>
             <Text color="blue">
-              Get an API key at: {chosenProvider.keyHelpUrl}
+              {chosenProvider.keyHelpUrl ? `Get an API key at: ${chosenProvider.keyHelpUrl}` : 'Use the local provider endpoint configured above.'}
             </Text>
           </Box>
           <Box>
@@ -259,7 +276,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
             <Text color="gray"> (Use ↑/↓ to navigate, Enter to finish)</Text>
           </Box>
 
-          {chosenProvider.id === "custon" ? (
+          {isLoadingModels ? (
+            <Text color="gray">Discovering models from the active provider…</Text>
+          ) : availableModels.length === 0 ? (
             <>
               <TextInput
                 value={modelInput}
@@ -268,7 +287,7 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                   setErrorMessage("");
                 }}
                 onSubmit={handleModelSubmit}
-                placeholder="Enter model name"
+                placeholder="Enter the model identifier returned by the provider"
               />
             </>
           ) : (
@@ -276,9 +295,11 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
               {availableModels.map((m, idx) => {
                 const isSelected = idx === selectedModelIndex;
                 const contextStr =
-                  m.contextWindow >= 1_000_000
-                    ? `${(m.contextWindow / 1_000_000).toFixed(0)}M tokens`
-                    : `${(m.contextWindow / 1_000).toFixed(0)}k tokens`;
+                  m.contextLength === undefined
+                    ? "context unknown"
+                    : m.contextLength >= 1_000_000
+                      ? `${(m.contextLength / 1_000_000).toFixed(0)}M tokens`
+                      : `${(m.contextLength / 1_000).toFixed(0)}k tokens`;
 
                 return (
                   <Box
@@ -290,16 +311,15 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
                     <Box>
                       <Text bold color={isSelected ? "cyan" : "white"}>
                         {isSelected ? "❯ " : "  "}
-                        {m.name}{" "}
+                        {m.displayName ?? m.id}{" "}
                       </Text>
                       <Text color="gray">
                         ({m.id}) • {contextStr}
                       </Text>
-                      {m.isDefault && <Text color="green"> [Default]</Text>}
                     </Box>
                     <Box paddingLeft={2}>
                       <Text color={isSelected ? "white" : "gray"}>
-                        {m.description}
+                        {m.supportsReasoningEffort ? "Native reasoning effort supported." : "Reasoning policy will be orchestrated by Sentinel."}
                       </Text>
                     </Box>
                   </Box>

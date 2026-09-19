@@ -44,7 +44,7 @@ jobs:
             platform: linux
             arch: x64
             artifact: sentinel-linux-x64.tar.gz
-          - os: macos-latest
+          - os: macos-14
             platform: darwin
             arch: arm64
             artifact: sentinel-darwin-arm64.tar.gz
@@ -76,22 +76,25 @@ jobs:
       - name: Bundle Production CLI
         run: node scripts/bundle.mjs
 
+      - name: Stage runtime dependencies
+        run: npm install --prefix dist-package --omit=dev --no-audit --no-fund better-sqlite3@11.10.0 ink@5.2.0 react@18.3.1 ink-text-input@6.0.0 ink-spinner@5.0.0 chalk@5.4.1 typescript@5.8.3
+
       - name: Package Artifacts (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist-package
-          cp dist/sentinel.cjs dist-package/sentinel
+          cp dist/sentinel.mjs dist-package/sentinel.mjs
+          cp distribution/sentinel dist-package/sentinel
           chmod +x dist-package/sentinel
-          tar -czf ${{ matrix.artifact }} -C dist-package sentinel
+          tar -czf ${{ matrix.artifact }} -C dist-package sentinel sentinel.mjs node_modules
 
       - name: Package Artifacts (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist-package | Out-Null
-          Copy-Item dist/sentinel.cjs dist-package/sentinel.cjs
-          # Create batch runner for Windows
-          "@node %~dp0sentinel.cjs %*" | Out-File -Encoding ascii dist-package/sentinel.cmd
+          Copy-Item dist/sentinel.mjs dist-package/sentinel.mjs
+          Copy-Item distribution/sentinel.cmd dist-package/sentinel.cmd
           Compress-Archive -Path dist-package/* -DestinationPath ${{ matrix.artifact }} -Force
 
       - name: Upload Artifact
@@ -109,11 +112,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
+          merge-multiple: true
 
       - name: Generate SHA256SUMS
         run: |
           cd release-artifacts
-          find . -type f -name 'sentinel-*' -exec sha256sum {} + > SHA256SUMS
+          sha256sum sentinel-linux-x64.tar.gz sentinel-darwin-arm64.tar.gz sentinel-windows-x64.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub Release

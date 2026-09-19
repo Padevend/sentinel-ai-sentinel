@@ -7,6 +7,7 @@
  */
 
 import { readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, relative } from 'node:path';
 import fg from 'fast-glob';
 import ignore from 'ignore';
@@ -15,6 +16,7 @@ import { createLogger } from '@sentinel/core';
 import type { IndexedFile, ProjectMetadata, ProjectScanResult, StructuralSymbol } from './types.js';
 import { detectProjectStack } from './detectors.js';
 import { StructuralAnalyzer } from './structural-analyzer.js';
+import { StructuralTwinBuilder } from "./structural-twin.js";
 
 const logger = createLogger('project-indexer');
 
@@ -54,6 +56,9 @@ export class ProjectIndexer {
 
     const indexedFiles: IndexedFile[] = [];
     const allSymbols: StructuralSymbol[] = [];
+    const sourceContents: Record<string, string> = {};
+    const previousFiles = this.storage ? (await this.storage.get<IndexedFile[]>("project", "files").catch(() => null)) ?? [] : [];
+    let reusedFiles = 0;
     let totalLines = 0;
 
     for (const relPath of validFiles) {
@@ -61,13 +66,19 @@ export class ProjectIndexer {
       try {
         const fileStat = await stat(fullPath);
         const language = this.detectLanguage(relPath);
+        const previous = previousFiles.find((file) => file.path === relPath);
+        const canReuseSymbols = previous?.size === fileStat.size && previous.modifiedAt === fileStat.mtimeMs && previous.symbols !== undefined;
+        if (canReuseSymbols) reusedFiles++;
 
         // Only parse text/code files for structural symbols
         let fileSymbols: StructuralSymbol[] = [];
-        if (this.isCodeFile(relPath) && fileStat.size < 500_000) {
+        let contentHash: string | undefined;
+        if ((this.isCodeFile(relPath) || relPath.endsWith('.prisma')) && fileStat.size < 500_000) {
           const content = await readFile(fullPath, 'utf-8');
+          sourceContents[relPath] = content;
+          contentHash = createHash('sha256').update(content).digest('hex');
           totalLines += content.split('\n').length;
-          fileSymbols = StructuralAnalyzer.analyze(relPath, content);
+          fileSymbols = canReuseSymbols ? [...(previous.symbols ?? [])] : StructuralAnalyzer.analyze(relPath, content);
           allSymbols.push(...fileSymbols);
         }
 
@@ -76,6 +87,11 @@ export class ProjectIndexer {
           size: fileStat.size,
           modifiedAt: fileStat.mtimeMs,
           language,
+          id: `file:${createHash("sha1").update(relPath).digest("hex").slice(0, 20)}`,
+          hash: contentHash,
+          isTest: /(^|[._\/\-])(test|spec)([._\/\-]|$)/i.test(relPath),
+          isGenerated: /(^|[\/])(dist|build|generated)([\/]|$)|\.d\.ts$/i.test(relPath),
+          isConfig: /(^|[\/])(package\.json|tsconfig[^/]*|vite\.config[^/]*|next\.config[^/]*|prisma[\/]schema\.prisma)$/.test(relPath),
           symbols: fileSymbols.length > 0 ? fileSymbols : undefined,
         };
 
@@ -87,6 +103,8 @@ export class ProjectIndexer {
 
     const info = await detectProjectStack(this.projectRoot, indexedFiles.length);
 
+    logger.info("Incremental index: reused " + reusedFiles + " file symbol sets", { reusedFiles, reparsedFiles: validFiles.length - reusedFiles });
+    const twin = StructuralTwinBuilder.build(this.projectRoot, info, indexedFiles, allSymbols, sourceContents);
     const metadata: ProjectMetadata = {
       info,
       indexedAt: Date.now(),
@@ -100,6 +118,7 @@ export class ProjectIndexer {
         await this.storage.set('project', 'metadata', metadata);
         await this.storage.set('project', 'files', indexedFiles);
         await this.storage.set('project', 'symbols', allSymbols);
+        await this.storage.set('project', 'structural_twin', twin);
       } catch (err) {
         logger.warn('Failed to cache project index to storage', { error: String(err) });
       }
@@ -109,6 +128,7 @@ export class ProjectIndexer {
       info,
       files: indexedFiles,
       symbols: allSymbols,
+      twin,
     };
   }
 
@@ -158,6 +178,8 @@ export class ProjectIndexer {
       case 'css':
       case 'scss':
         return 'CSS';
+      case 'prisma':
+        return 'Prisma';
       case 'yaml':
       case 'yml':
         return 'YAML';

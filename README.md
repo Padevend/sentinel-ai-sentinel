@@ -19,16 +19,6 @@ curl -fsSL https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribut
 irm https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribution/install.ps1 | iex
 ```
 
-### WinGet (Windows Package Manager)
-```bash
-winget install Sentinel.Sentinel
-```
-
-### npm Global
-```bash
-npm install -g @sentinel/cli
-```
-
 ---
 
 ## 🚀 Usage
@@ -112,7 +102,7 @@ sentinel/
 │   ├── git/                # Git client abstraction
 │   └── permissions/        # Three-tier tool permission system (safe, confirm_recommended, confirm_required)
 │
-└── distribution/           # Standalone installers (install.sh, install.ps1, WinGet manifest)
+└── distribution/           # GitHub release installers (install.sh, install.ps1)
 ```
 
 ---
@@ -140,11 +130,12 @@ sentinel/
 | Command | Description |
 |---|---|
 | `/model` | Open interactive selector to choose or switch models in real-time |
-| `/reset` | Wipe `~/sentinel/config/settings.json` and reset all configuration |
+| `/reasoning`, `/effort` | Select `auto`, `low`, `medium`, `high` or `max` reasoning effort |
+| `/permissions` | Edit tool permission levels for the current session or global settings |
+| `/reset` | Reset configuration, persist session closure and exit Sentinel |
 | `/status` | Show project tech stack, file count & git status |
-| `/permissions` | Show active tool permission levels & safety rules |
 | `/clear` | Clear session message history |
-| `/exit`, `/quit` | Save session state and exit Sentinel |
+| `/exit`, `/quit`, `/q`, `/ecit` | Save session state and exit Sentinel |
 
 ---
 
@@ -158,13 +149,13 @@ cd sentinel
 # Install dependencies
 pnpm install
 
-# Run unit and integration tests (36 tests)
+# Run unit and integration tests
 pnpm test
 
 # Build all workspace packages
 pnpm build
 
-# Produce standalone production bundle (dist/sentinel.js)
+# Produce production ESM bundle (dist/sentinel.mjs)
 pnpm bundle
 ```
 

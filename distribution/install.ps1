@@ -1,37 +1,35 @@
-# Sentinel Official Installer for Windows (PowerShell)
-# Usage: irm https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribution/install.ps1 | iex
+# Sentinel installer for Windows PowerShell.
+# Usage: curl.exe -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/distribution/install.ps1 -o $env:TEMP\sentinel-install.ps1; powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\sentinel-install.ps1
 
 $ErrorActionPreference = 'Stop'
 
-Write-Host ""
-Write-Host "  🛡️  SENTINEL — AI Software Engineering Agent" -ForegroundColor Cyan
-Write-Host "      Autonomous Architecture & Development Runtime" -ForegroundColor DarkCyan
-Write-Host ""
-
-# 1. Detect Architecture
-$arch = if ([System.Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
-if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-    $arch = "arm64"
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCommand) {
+    throw 'Node.js 20 or newer is required. Install Node.js first.'
+}
+$nodeMajor = [int]((node --version).TrimStart('v').Split('.')[0])
+if ($nodeMajor -lt 20) {
+    throw "Node.js 20 or newer is required. Found $(node --version)."
 }
 
-$sentinelHome = Join-Path $env:USERPROFILE ".sentinel"
-$binDir = Join-Path $sentinelHome "bin"
-$configDir = Join-Path $sentinelHome "config"
-$dataDir = Join-Path $sentinelHome "data"
-$cacheDir = Join-Path $sentinelHome "cache"
-$logsDir = Join-Path $sentinelHome "logs"
+$arch = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' }
+if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arch = 'arm64' }
 
-# Ensure runtime directories
-New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
-New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+$sentinelHome = Join-Path $env:USERPROFILE '.sentinel'
+$binDir = Join-Path $sentinelHome 'bin'
+foreach ($directory in @(
+    $binDir,
+    (Join-Path $sentinelHome 'config'),
+    (Join-Path $sentinelHome 'data'),
+    (Join-Path $sentinelHome 'cache'),
+    (Join-Path $sentinelHome 'logs')
+)) {
+    New-Item -ItemType Directory -Force -Path $directory | Out-Null
+}
 
-$version = if ($env:SENTINEL_VERSION) { $env:SENTINEL_VERSION } else { "latest" }
-$repo = "sentinel-ai/sentinel"
-
-$releaseUrl = if ($version -eq "latest") {
+$version = if ($env:SENTINEL_VERSION) { $env:SENTINEL_VERSION } else { 'latest' }
+$repo = if ($env:SENTINEL_REPO) { $env:SENTINEL_REPO } else { 'sentinel-ai/sentinel' }
+$releaseUrl = if ($version -eq 'latest') {
     "https://github.com/$repo/releases/latest/download"
 } else {
     "https://github.com/$repo/releases/download/v$version"
@@ -39,49 +37,38 @@ $releaseUrl = if ($version -eq "latest") {
 
 $zipName = "sentinel-windows-$arch.zip"
 $downloadUrl = "$releaseUrl/$zipName"
-$tempZip = Join-Path ([System.IO.Path]::GetTempPath()) "sentinel-install-$arch.zip"
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("sentinel-install-" + [Guid]::NewGuid().ToString('N'))
+$tempZip = Join-Path $tempRoot $zipName
+$tempChecksum = Join-Path $tempRoot 'SHA256SUMS'
+New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 
-Write-Host "Detected Platform: Windows-$arch" -ForegroundColor Gray
-Write-Host "Installing to: $binDir" -ForegroundColor Gray
-Write-Host "Downloading Sentinel ($version)..." -ForegroundColor Yellow
-
-$downloaded = $false
 try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Write-Host "Installing Sentinel $version for Windows-$arch to $binDir"
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
-    $downloaded = $true
-} catch {
-    Write-Host "Release download skipped (fallback mode). Checking npm..." -ForegroundColor DarkYellow
-}
+    Invoke-WebRequest -Uri "$releaseUrl/SHA256SUMS" -OutFile $tempChecksum -UseBasicParsing
 
-if ($downloaded -and (Test-Path $tempZip)) {
+    $expectedLine = Get-Content $tempChecksum | Where-Object {
+        $_ -match ("\s" + [regex]::Escape($zipName) + '$')
+    } | Select-Object -First 1
+    $expectedHash = if ($expectedLine) { ($expectedLine -split '\s+')[0].ToLowerInvariant() } else { '' }
+    $actualHash = (Get-FileHash -Path $tempZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not $expectedHash -or $expectedHash -ne $actualHash) {
+        throw 'Release checksum verification failed.'
+    }
+
     Expand-Archive -Path $tempZip -DestinationPath $binDir -Force
-    Remove-Item -Force $tempZip -ErrorAction SilentlyContinue
-} else {
-    # Fallback to npm global install if available
-    if (Get-Command npm -ErrorAction SilentlyContinue) {
-        Write-Host "Installing @sentinel/cli globally via npm..." -ForegroundColor Cyan
-        npm install -g @sentinel/cli
-    } else {
-        Write-Host "Error: Could not download binary and npm is not found in PATH." -ForegroundColor Red
-        exit 1
+} finally {
+    if (Test-Path $tempRoot) {
+        Remove-Item -Recurse -Force $tempRoot -ErrorAction SilentlyContinue
     }
 }
 
-# 2. Add to User PATH
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$binDir*") {
-    $newUserPath = "$userPath;$binDir"
-    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+    $newUserPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $binDir } else { "$userPath;$binDir" }
+    [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
     $env:Path = "$env:Path;$binDir"
-    Write-Host "Added $binDir to User Environment PATH." -ForegroundColor Green
 }
 
-Write-Host ""
-Write-Host "✓ Sentinel installed successfully!" -ForegroundColor Green
-Write-Host ""
-Write-Host "To get started:" -ForegroundColor White
-Write-Host "  1. Open a new PowerShell / Terminal window" -ForegroundColor Gray
-Write-Host "  2. Navigate to your project: cd C:\path\to\project" -ForegroundColor Gray
-Write-Host "  3. Launch Sentinel: sentinel" -ForegroundColor Cyan
-Write-Host ""
+Write-Host 'Sentinel installed successfully.' -ForegroundColor Green
+Write-Host 'Open a new PowerShell window, then run: sentinel --version'

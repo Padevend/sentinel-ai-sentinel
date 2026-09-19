@@ -7,9 +7,13 @@
 
 export type {
   LLMProvider,
+  ModelProvider,
+  CompletionParams,
+  ChatMessage,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  StreamEvent,
   ProviderConfig,
 } from './types.js';
 
@@ -17,11 +21,12 @@ export { GoogleProvider } from './providers/google.js';
 export { OpenAIProvider } from './providers/openai.js';
 export { AnthropicProvider } from './providers/anthropic.js';
 export { ProviderRegistry, createProvider } from './provider-registry.js';
+export { ModelDiscovery } from './model-discovery.js';
 
 export {
   PROVIDERS,
-  MODELS,
   getAvailableModels,
   getDefaultModelForProvider,
 } from './models.js';
-export type { ModelInfo, ProviderInfo } from './models.js';
+export type { ProviderInfo } from './models.js';
+export type { ModelInfo, ReasoningEffort } from './types.js';

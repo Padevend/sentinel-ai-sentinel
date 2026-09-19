@@ -2,7 +2,7 @@
  * @sentinel/llm — Google AI Studio (Gemini) Provider
  *
  * Direct REST adapter for Google AI Studio Gemini API.
- * Supports Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.0 Flash, Gemini 1.5 Pro, etc.
+ * Supports the models exposed by the configured Google AI endpoint.
  * Supports streaming, tool calling (function declarations), token usage reporting,
  * and cancellation via AbortSignal.
  */
@@ -11,10 +11,12 @@ import { ModelError } from '@sentinel/core';
 import type { Message, ToolDefinition, ToolCall, ToolCallId, TokenUsage } from '@sentinel/core';
 import type {
   LLMProvider,
+  CompletionParams,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
   ProviderConfig,
+  ModelInfo,
 } from '../types.js';
 
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -84,18 +86,62 @@ interface GeminiGenerateResponse {
 }
 
 export class GoogleProvider implements LLMProvider {
+  readonly id = 'google';
   readonly name = 'Google AI';
   readonly modelId: string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
 
   constructor(config: ProviderConfig) {
-    this.modelId = config.model;
+    this.modelId = config.model ?? '';
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl ? config.baseUrl.replace(/\/+$/, '') : DEFAULT_BASE_URL;
   }
 
+  async listModels(signal?: AbortSignal): Promise<readonly ModelInfo[]> {
+    const url = `${this.baseUrl}/models?key=${encodeURIComponent(this.apiKey)}`;
+    const response = await fetch(url, { method: 'GET', signal });
+    if (!response.ok) {
+      throw new ModelError(`Model listing failed for Google AI (${response.status})`, {
+        code: 'MODEL_LIST_FAILED',
+        retryable: response.status === 429 || response.status >= 500,
+      });
+    }
+    const payload: unknown = await response.json();
+    if (!isRecord(payload) || !Array.isArray(payload['models'])) return [];
+    return payload['models'].filter(isRecord).reduce<ModelInfo[]>((models, record) => {
+        const resourceName = readString(record, 'name');
+        if (!resourceName) return models;
+        const id = resourceName.startsWith('models/') ? resourceName.slice('models/'.length) : resourceName;
+        models.push({
+          id,
+          displayName: readString(record, 'displayName') ?? id,
+          contextLength: readNumber(record, 'inputTokenLimit'),
+          supportsReasoningEffort: false,
+          raw: record,
+        });
+        return models;
+      }, []);
+  }
+
+  supportsNativeReasoningEffort(): boolean {
+    return false;
+  }
+
+  complete(params: CompletionParams): AsyncIterable<ChatStreamChunk> {
+    return this.chatStream({
+      messages: params.messages,
+      tools: params.tools,
+      reasoningEffort: params.reasoningEffort,
+      maxTokens: params.maxTokens,
+      temperature: params.temperature,
+      signal: params.signal,
+      systemPrompt: params.systemPrompt,
+    });
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    this.assertModelSelected();
     const url = `${this.baseUrl}/models/${this.modelId}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
     const body = this.buildRequestBody(request);
 
@@ -197,6 +243,7 @@ export class GoogleProvider implements LLMProvider {
   }
 
   async *chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk> {
+    this.assertModelSelected();
     const url = `${this.baseUrl}/models/${this.modelId}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
     const body = this.buildRequestBody(request);
 
@@ -316,6 +363,15 @@ export class GoogleProvider implements LLMProvider {
     }
   }
 
+  private assertModelSelected(): void {
+    if (!this.modelId) {
+      throw new ModelError('No model selected. Discover models from the configured provider first.', {
+        code: 'MODEL_NOT_SELECTED',
+        retryable: false,
+      });
+    }
+  }
+
   // ─── Request Builder ─────────────────────────────────────────────
 
   private buildRequestBody(request: ChatRequest): GeminiGenerateRequest {
@@ -347,7 +403,7 @@ export class GoogleProvider implements LLMProvider {
             for (const tc of msg.toolCalls) {
               const args =
                 typeof tc.input === 'string'
-                  ? (JSON.parse(tc.input) as Record<string, unknown>)
+                  ? parseToolArguments(tc.input)
                   : (tc.input as Record<string, unknown>) ?? {};
               parts.push({
                 functionCall: {
@@ -436,5 +492,30 @@ export class GoogleProvider implements LLMProvider {
 
   private isRetryableStatus(status: number): boolean {
     return status === 429 || status === 500 || status === 503 || status === 504;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseToolArguments(argumentsText: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(argumentsText);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : { invalidArguments: argumentsText };
+  } catch {
+    return { invalidArguments: argumentsText };
   }
 }

@@ -1,144 +1,84 @@
 /**
- * @sentinel/project — Structural Analyzer
+ * @sentinel/project - Deterministic TypeScript/JavaScript AST analyzer.
  *
- * Deterministic code parsing for JavaScript / TypeScript files.
- * Extracts symbols (functions, classes, interfaces, types, endpoints, React components, imports).
- * Prepares the structural foundation for the future Behavioral Twin.
+ * The analyzer runs before an LLM call and extracts only structural facts:
+ * imports, declarations, React components, and common HTTP routes.
  */
 
+import ts from 'typescript';
 import type { StructuralSymbol } from './types.js';
 
 export class StructuralAnalyzer {
-  /**
-   * Analyzes file content and extracts structural symbols.
-   */
   static analyze(filePath: string, content: string): StructuralSymbol[] {
     const symbols: StructuralSymbol[] = [];
-    const lines = content.split('\n');
+    const scriptKind = filePath.endsWith('.tsx')
+      ? ts.ScriptKind.TSX
+      : filePath.endsWith('.jsx')
+        ? ts.ScriptKind.JSX
+        : filePath.endsWith('.js') || filePath.endsWith('.mjs') || filePath.endsWith('.cjs')
+          ? ts.ScriptKind.JS
+          : ts.ScriptKind.TS;
+    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, scriptKind);
+    const isReactFile = scriptKind === ts.ScriptKind.TSX || scriptKind === ts.ScriptKind.JSX;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!.trim();
-      const lineNum = i + 1;
+    const add = (
+      node: ts.Node,
+      name: string,
+      kind: StructuralSymbol['kind'],
+      details = node.getText(sourceFile),
+    ): void => {
+      const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+      const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd());
+      symbols.push({
+        name,
+        kind,
+        filePath,
+        line: start.line + 1,
+        endLine: end.line + 1,
+        details,
+      });
+    };
 
-      // Skip comments
-      if (line.startsWith('//') || line.startsWith('/*') || line.startsWith('*')) {
-        continue;
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+        add(node, node.moduleSpecifier.text, 'import');
+      } else if (ts.isFunctionDeclaration(node) && node.name) {
+        add(node, node.name.text, isReactFile && isComponentName(node.name.text) ? 'react_component' : 'function');
+      } else if (ts.isClassDeclaration(node) && node.name) {
+        add(node, node.name.text, 'class');
+      } else if (ts.isInterfaceDeclaration(node)) {
+        add(node, node.name.text, 'interface');
+      } else if (ts.isTypeAliasDeclaration(node)) {
+        add(node, node.name.text, 'type');
+      } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const initializer = node.initializer;
+        if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+          add(node, node.name.text, isReactFile && isComponentName(node.name.text) ? 'react_component' : 'function');
+        }
+      } else if (ts.isCallExpression(node)) {
+        const route = getRoute(node);
+        if (route) add(node, `${route.method} ${route.path}`, 'endpoint', `${route.method} route registered at ${route.path}`);
       }
+      ts.forEachChild(node, visit);
+    };
 
-      // 1. React Component detection: function ComponentName(props) or const ComponentName = (props) =>
-      const reactMatch = line.match(/(?:export\s+)?(?:function|const)\s+([A-Z][a-zA-Z0-9]+)\s*(?:=|:\s*React\.FC|\()/);
-      if (reactMatch && (line.includes('JSX') || line.includes('React') || filePath.endsWith('.tsx') || filePath.endsWith('.jsx'))) {
-        symbols.push({
-          name: reactMatch[1]!,
-          kind: 'react_component',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-        continue;
-      }
-
-      // 2. HTTP Route / Endpoint detection (Express / Fastify / Next.js / Nest)
-      const routeMatch = line.match(/(?:app|router|server)\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/i);
-      if (routeMatch) {
-        const method = routeMatch[1]!.toUpperCase();
-        const routePath = routeMatch[2]!;
-        symbols.push({
-          name: `${method} ${routePath}`,
-          kind: 'endpoint',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: `${method} route registered at ${routePath}`,
-        });
-        continue;
-      }
-
-      // 3. Class detection
-      const classMatch = line.match(/(?:export\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_$]+)(?:\s+extends\s+([a-zA-Z0-9_$]+))?(?:\s+implements\s+([^{]+))?/);
-      if (classMatch) {
-        symbols.push({
-          name: classMatch[1]!,
-          kind: 'class',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-        continue;
-      }
-
-      // 4. Interface detection
-      const interfaceMatch = line.match(/(?:export\s+)?interface\s+([a-zA-Z0-9_$]+)/);
-      if (interfaceMatch) {
-        symbols.push({
-          name: interfaceMatch[1]!,
-          kind: 'interface',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-        continue;
-      }
-
-      // 5. Type alias detection
-      const typeMatch = line.match(/(?:export\s+)?type\s+([a-zA-Z0-9_$]+)\s*=/);
-      if (typeMatch) {
-        symbols.push({
-          name: typeMatch[1]!,
-          kind: 'type',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-        continue;
-      }
-
-      // 6. Function declaration
-      const funcMatch = line.match(/(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_$]+)\s*\(/);
-      if (funcMatch) {
-        symbols.push({
-          name: funcMatch[1]!,
-          kind: 'function',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-        continue;
-      }
-
-      // 7. Arrow function / Method assignment
-      const arrowMatch = line.match(/(?:export\s+)?(?:const|let)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::\s*[^=]+)?\s*=>/);
-      if (arrowMatch) {
-        symbols.push({
-          name: arrowMatch[1]!,
-          kind: 'function',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-        continue;
-      }
-
-      // 8. Import statements
-      const importMatch = line.match(/import\s+(?:.+?\s+from\s+)?['"`]([^'"`]+)['"`]/);
-      if (importMatch) {
-        symbols.push({
-          name: importMatch[1]!,
-          kind: 'import',
-          filePath,
-          line: lineNum,
-          endLine: lineNum,
-          details: line,
-        });
-      }
-    }
-
+    visit(sourceFile);
     return symbols;
   }
+}
+
+function isComponentName(name: string): boolean {
+  return /^[A-Z]/.test(name);
+}
+
+function getRoute(node: ts.CallExpression): { method: string; path: string } | undefined {
+  if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
+  const receiver = node.expression.expression;
+  const method = node.expression.name.text.toLowerCase();
+  if (!ts.isIdentifier(receiver)) return undefined;
+  if (!['app', 'router', 'server'].includes(receiver.text)) return undefined;
+  if (!['get', 'post', 'put', 'delete', 'patch'].includes(method)) return undefined;
+  const firstArgument = node.arguments[0];
+  if (!firstArgument || !ts.isStringLiteral(firstArgument)) return undefined;
+  return { method: method.toUpperCase(), path: firstArgument.text };
 }

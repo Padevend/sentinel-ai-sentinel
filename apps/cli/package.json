@@ -23,6 +23,7 @@
     "@sentinel/storage": "workspace:*",
     "@sentinel/git": "workspace:*",
     "@sentinel/permissions": "workspace:*",
+    "@sentinel/skills": "workspace:*",
     "ink": "^5.2.0",
     "react": "^18.3.1",
     "ink-text-input": "^6.0.0",

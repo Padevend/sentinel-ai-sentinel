@@ -12,9 +12,14 @@ import type { ToolCallId } from '@sentinel/core';
 const TEST_DIR = join(process.cwd(), '.tmp-integration-test');
 
 class DeterministicFixProvider implements LLMProvider {
+  readonly id = 'test-provider';
   readonly name = 'DeterministicFix';
   readonly modelId = 'test-model';
   private step = 0;
+
+  async listModels(): Promise<readonly never[]> { return []; }
+
+  supportsNativeReasoningEffort(): boolean { return false; }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     this.step++;
@@ -91,6 +96,7 @@ describe('Sentinel End-to-End Agent Integration', () => {
   it('should find the buggy file, apply patch, and solve the problem', async () => {
     const tools = createDefaultToolRegistry();
     const permissions = new PermissionManager();
+    permissions.setConfirmationHandler(async () => true);
     const provider = new DeterministicFixProvider();
 
     const indexer = new ProjectIndexer(TEST_DIR);

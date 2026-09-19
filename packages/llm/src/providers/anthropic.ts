@@ -10,21 +10,29 @@ import { ModelError } from '@sentinel/core';
 import type { Message, ToolDefinition, ToolCall, ToolCallId, TokenUsage } from '@sentinel/core';
 import type {
   LLMProvider,
+  CompletionParams,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
   ProviderConfig,
+  ModelInfo,
 } from '../types.js';
 
+const DEFAULT_BASE_URL = 'https://api.anthropic.com/v1';
 const MAX_RETRIES = 3;
 
 export class AnthropicProvider implements LLMProvider {
+  readonly id = 'anthropic';
   readonly name = 'Anthropic';
   readonly modelId: string;
   private readonly client: Anthropic;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
 
   constructor(config: ProviderConfig) {
-    this.modelId = config.model;
+    this.modelId = config.model ?? '';
+    this.apiKey = config.apiKey;
+    this.baseUrl = config.baseUrl?.replace(/\/+$/, '') ?? DEFAULT_BASE_URL;
     this.client = new Anthropic({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
@@ -32,16 +40,64 @@ export class AnthropicProvider implements LLMProvider {
     });
   }
 
+  async listModels(signal?: AbortSignal): Promise<readonly ModelInfo[]> {
+    const response = await fetch(`${this.baseUrl}/models`, {
+      method: 'GET',
+      headers: {
+        'anthropic-version': '2023-06-01',
+        ...(this.apiKey ? { 'x-api-key': this.apiKey } : {}),
+      },
+      signal,
+    });
+    if (!response.ok) {
+      throw new ModelError(`Model listing failed for Anthropic (${response.status})`, {
+        code: 'MODEL_LIST_FAILED',
+        retryable: response.status === 429 || response.status >= 500,
+      });
+    }
+    const payload: unknown = await response.json();
+    if (!isRecord(payload) || !Array.isArray(payload['data'])) return [];
+    return payload['data'].filter(isRecord).reduce<ModelInfo[]>((models, record) => {
+        const id = readString(record, 'id');
+        if (!id) return models;
+        models.push({
+          id,
+          displayName: readString(record, 'display_name') ?? id,
+          supportsReasoningEffort: true,
+          raw: record,
+        });
+        return models;
+      }, []);
+  }
+
+  supportsNativeReasoningEffort(): boolean {
+    return true;
+  }
+
+  complete(params: CompletionParams): AsyncIterable<ChatStreamChunk> {
+    return this.chatStream({
+      messages: params.messages,
+      tools: params.tools,
+      reasoningEffort: params.reasoningEffort,
+      maxTokens: params.maxTokens,
+      temperature: params.temperature,
+      signal: params.signal,
+      systemPrompt: params.systemPrompt,
+    });
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
+      this.assertModelSelected();
       const response = await this.client.messages.create(
         {
           model: this.modelId,
           system: request.systemPrompt ?? '',
           messages: this.mapMessages(request),
           tools: request.tools ? this.mapTools(request.tools) : undefined,
-          max_tokens: request.maxTokens ?? 4096,
+          max_tokens: Math.max(request.maxTokens ?? 4096, this.mapThinking(request)?.budget_tokens ?? 0),
           temperature: request.temperature,
+          ...(this.mapThinking(request) ? { thinking: this.mapThinking(request) } : {}),
         },
       );
 
@@ -84,13 +140,15 @@ export class AnthropicProvider implements LLMProvider {
 
   async *chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk> {
     try {
+      this.assertModelSelected();
       const stream = this.client.messages.stream({
         model: this.modelId,
         system: request.systemPrompt ?? '',
         messages: this.mapMessages(request),
         tools: request.tools ? this.mapTools(request.tools) : undefined,
-        max_tokens: request.maxTokens ?? 4096,
+        max_tokens: Math.max(request.maxTokens ?? 4096, this.mapThinking(request)?.budget_tokens ?? 0),
         temperature: request.temperature,
+        ...(this.mapThinking(request) ? { thinking: this.mapThinking(request) } : {}),
       });
 
       // Track current tool use block
@@ -167,6 +225,21 @@ export class AnthropicProvider implements LLMProvider {
           cause: error,
         },
       );
+    }
+  }
+
+  private mapThinking(request: ChatRequest): { type: 'enabled'; budget_tokens: number } | undefined {
+    if (!request.reasoningEffort) return undefined;
+    const budgetByEffort = { low: 1024, medium: 4096, high: 8192, max: 16384 } as const;
+    return { type: 'enabled', budget_tokens: budgetByEffort[request.reasoningEffort] };
+  }
+
+  private assertModelSelected(): void {
+    if (!this.modelId) {
+      throw new ModelError('No model selected. Discover models from the configured provider first.', {
+        code: 'MODEL_NOT_SELECTED',
+        retryable: false,
+      });
     }
   }
 
@@ -249,4 +322,13 @@ export class AnthropicProvider implements LLMProvider {
     }
     return false;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

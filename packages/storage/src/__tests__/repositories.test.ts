@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SQLiteRepositories } from '../index.js';
-import type { ProjectIdentity, StoredSession } from '@sentinel/core';
+import type { ProjectId, ProjectIdentity, SessionId, StoredSession, WorkspaceId } from '@sentinel/core';
 
 describe('SQLiteRepositories & Migrations', () => {
   const testDbPath = join(tmpdir(), `sentinel-test-${Date.now()}.db`);
@@ -22,7 +22,7 @@ describe('SQLiteRepositories & Migrations', () => {
 
   it('should persist and retrieve project identity', async () => {
     const project: ProjectIdentity = {
-      id: 'proj_test_123' as any,
+      id: 'proj_test_123' as ProjectId,
       name: 'test-project',
       canonicalPath: '/test/path',
       gitRemote: 'https://github.com/org/repo',
@@ -41,21 +41,21 @@ describe('SQLiteRepositories & Migrations', () => {
 
   it('should persist, query, and delete sessions with checkpoints', async () => {
     const session: StoredSession = {
-      id: 'sess_test_1' as any,
-      projectId: 'proj_test_123' as any,
-      workspaceId: 'ws_test_1' as any,
+      id: 'sess_test_1' as SessionId,
+      projectId: 'proj_test_123' as ProjectId,
+      workspaceId: 'ws_test_1' as WorkspaceId,
       status: 'active',
       createdAt: Date.now() - 1000,
       updatedAt: Date.now(),
       taskSummary: 'Test session task',
-      modelId: 'gemini-3.1-pro',
+      modelId: 'test-model',
       providerName: 'Google AI',
       messages: [{ role: 'user', content: 'Hello', timestamp: new Date() }],
       state: { completedSteps: ['step 1'], pendingSteps: [], verificationStatus: 'passing' },
       checkpoints: [
         {
           id: 'chk_1',
-          sessionId: 'sess_test_1' as any,
+          sessionId: 'sess_test_1' as SessionId,
           stepIndex: 1,
           summary: 'Step 1 complete',
           state: { completedSteps: ['step 1'], pendingSteps: [], verificationStatus: 'passing' },

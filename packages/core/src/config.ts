@@ -10,8 +10,10 @@
 
 import { z } from 'zod';
 import { readFile, rm, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { PlatformService } from './platform.js';
 import { ConfigurationError } from './errors.js';
 import type { LogLevel, PermissionLevel } from './types.js';
@@ -23,10 +25,23 @@ export const PermissionOverrideSchema = z.object({
   level: z.enum(['safe', 'confirm_recommended', 'confirm_required']),
 });
 
+export const PermissionRuleSchema = z.object({
+  scope: z.union([
+    z.object({ kind: z.literal('shell'), pattern: z.string() }),
+    z.object({ kind: z.literal('fs_write'), pathGlob: z.string() }),
+    z.object({ kind: z.literal('network'), hostPattern: z.string() }),
+  ]),
+  action: z.enum(['allow', 'ask', 'deny']),
+  source: z.enum(['builtin_default', 'global_config', 'project_config', 'session_override']),
+});
+
 export const ModelConfigSchema = z.object({
-  provider: z.string().default('google'),
-  model: z.string().default('gemini-3.1-pro'),
-  baseUrl: z.string().optional(),
+  provider: z.string().trim().min(1).default('google'),
+  /** Legacy alias retained for migration; discovery populates modelId. */
+  model: z.string().trim().min(1).optional(),
+  modelId: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(['low', 'medium', 'high', 'max']).optional(),
+  baseUrl: z.string().trim().url().optional(),
   apiKey: z.string().optional(),
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
@@ -35,6 +50,7 @@ export const ModelConfigSchema = z.object({
 export const PermissionsConfigSchema = z.object({
   defaultLevel: z.enum(['safe', 'confirm_recommended', 'confirm_required']).default('confirm_recommended'),
   overrides: z.array(PermissionOverrideSchema).default([]),
+  rules: z.array(PermissionRuleSchema).default([]),
   allowedCommands: z.array(z.string()).default([]),
   blockedCommands: z.array(z.string()).default([]),
 });
@@ -57,6 +73,24 @@ export const PrivacyConfigSchema = z.object({
     '*.secret', 'id_rsa*', 'id_ed25519*',
   ]),
 });
+export const McpServerConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  transport: z.enum(["stdio"]).default("stdio"),
+  command: z.string().trim().min(1),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string()).default({}),
+  startupTimeoutMs: z.number().int().positive().max(120000).default(15000),
+});
+
+export const McpConfigSchema = z.object({
+  servers: z.record(McpServerConfigSchema).default({}),
+});
+
+export const SkillsConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  directories: z.array(z.string().trim().min(1)).default([".sentinel/skills"]),
+  enabledSkills: z.array(z.string().trim().min(1)).default([]),
+});
 
 export const SentinelConfigSchema = z.object({
   version: z.number().int().default(1),
@@ -65,16 +99,23 @@ export const SentinelConfigSchema = z.object({
   agent: AgentConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
   privacy: PrivacyConfigSchema.default({}),
+  mcp: McpConfigSchema.default({}),
+  skills: SkillsConfigSchema.default({}),
 });
 
 export type SentinelConfig = z.infer<typeof SentinelConfigSchema>;
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
+export type McpConfig = z.infer<typeof McpConfigSchema>;
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 export interface SettingsData {
   version?: number;
   model: {
     provider: string;
-    model: string;
+    model?: string;
+    modelId?: string;
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
     baseUrl?: string;
     apiKey?: string;
     maxTokens?: number;
@@ -83,6 +124,11 @@ export interface SettingsData {
   permissions?: {
     defaultLevel?: 'safe' | 'confirm_recommended' | 'confirm_required';
     overrides?: Array<{ tool: string; level: 'safe' | 'confirm_recommended' | 'confirm_required' }>;
+    rules?: Array<{
+      scope: { kind: 'shell'; pattern: string } | { kind: 'fs_write'; pathGlob: string } | { kind: 'network'; hostPattern: string };
+      action: 'allow' | 'ask' | 'deny';
+      source: 'builtin_default' | 'global_config' | 'project_config' | 'session_override';
+    }>;
     allowedCommands?: string[];
     blockedCommands?: string[];
   };
@@ -90,6 +136,21 @@ export interface SettingsData {
     maxIterations?: number;
     maxVerificationRetries?: number;
     streamResponses?: boolean;
+  };
+  mcp?: {
+    servers?: Record<string, {
+      enabled?: boolean;
+      transport?: 'stdio';
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      startupTimeoutMs?: number;
+    }>;
+  };
+  skills?: {
+    enabled?: boolean;
+    directories?: string[];
+    enabledSkills?: string[];
   };
   logging?: {
     level?: 'debug' | 'info' | 'warn' | 'error';
@@ -123,6 +184,10 @@ export function getGlobalSettingsPath(): string {
   return join(getGlobalConfigDir(), 'settings.json');
 }
 
+function getGlobalSecretsPath(): string {
+  return join(getGlobalConfigDir(), 'secrets.json');
+}
+
 /**
  * Returns legacy ~/.sentinel/settings.json path if it exists for migration.
  */
@@ -152,6 +217,13 @@ export async function isFirstLaunch(): Promise<boolean> {
     return false;
   }
 
+  if (SecretStore.resolveSecret(settings?.model?.provider ?? 'google').apiKey) return false;
+
+  const provider = settings?.model?.provider?.toLowerCase();
+  const hasModelForKeylessProvider = Boolean(settings?.model?.modelId ?? settings?.model?.model)
+    && (provider === 'ollama' || provider === 'custom');
+  if (hasModelForKeylessProvider) return false;
+
   return true;
 }
 
@@ -165,7 +237,12 @@ export async function loadSettings(): Promise<SettingsData | null> {
   // Try primary standard path first
   try {
     const raw = await readFile(primaryPath, 'utf-8');
-    return JSON.parse(raw) as SettingsData;
+    const parsed = JSON.parse(raw) as SettingsData;
+    if (parsed.model?.apiKey) {
+      await saveSettings(parsed);
+      return { ...parsed, model: { ...parsed.model, apiKey: undefined } };
+    }
+    return parsed;
   } catch {
     // Try legacy path
     try {
@@ -173,7 +250,7 @@ export async function loadSettings(): Promise<SettingsData | null> {
       const parsed = JSON.parse(rawLegacy) as SettingsData;
       // Auto-migrate to standard path
       await saveSettings(parsed);
-      return parsed;
+      return { ...parsed, model: { ...parsed.model, apiKey: undefined } };
     } catch {
       return null;
     }
@@ -188,7 +265,13 @@ export async function saveSettings(settings: SettingsData): Promise<void> {
   await platformService.ensureDirectories();
   const primaryPath = getGlobalSettingsPath();
 
-  const formatted = JSON.stringify(settings, null, 2);
+  const apiKey = settings.model.apiKey;
+  if (apiKey) await SecretStore.saveSecret(settings.model.provider, apiKey);
+  const safeSettings: SettingsData = {
+    ...settings,
+    model: { ...settings.model, apiKey: undefined },
+  };
+  const formatted = JSON.stringify(safeSettings, null, 2);
   await platformService.atomicWriteFile(primaryPath, formatted, 0o600);
 }
 
@@ -199,7 +282,6 @@ export async function updateSettings(partial: Partial<SettingsData>): Promise<Se
   const existing = (await loadSettings()) ?? {
     model: {
       provider: 'google',
-      model: 'gemini-3.1-pro',
     },
   };
 
@@ -229,6 +311,11 @@ export async function resetSettings(): Promise<void> {
   } catch {
     // Ignore
   }
+  try {
+    await rm(getGlobalSecretsPath(), { force: true });
+  } catch {
+    // Ignore
+  }
 }
 
 // ─── Project Config (<projectRoot>/.sentinel/settings.json) ───────
@@ -244,9 +331,14 @@ async function loadProjectConfigFile(projectRoot: string): Promise<{
 
   for (const candidate of candidates) {
     try {
-      const raw = await readFile(candidate, 'utf-8');
-      const parsed = JSON.parse(raw);
-      return { data: parsed as Partial<SentinelConfig>, path: candidate };
+      const raw = await readFile(candidate, "utf-8");
+      const parsed = JSON.parse(raw) as Partial<SentinelConfig>;
+      if (parsed.model && typeof parsed.model === "object") {
+        const model = { ...parsed.model };
+        delete model.apiKey;
+        return { data: { ...parsed, model }, path: candidate };
+      }
+      return { data: parsed, path: candidate };
     } catch {
       // Continue to next candidate
     }
@@ -265,6 +357,7 @@ function applyEnvOverrides(config: SentinelConfig): SentinelConfig {
     model.provider = env['SENTINEL_PROVIDER'];
   }
   if (env['SENTINEL_MODEL']) {
+    model.modelId = env['SENTINEL_MODEL'];
     model.model = env['SENTINEL_MODEL'];
   }
   if (env['SENTINEL_BASE_URL']) {
@@ -314,6 +407,8 @@ export class SecretStore {
       apiKey = settingsApiKey;
     }
 
+    if (!apiKey) apiKey = this.readSecret(provider);
+
     // 4. Fallback across all common API keys
     if (!apiKey) {
       apiKey =
@@ -326,6 +421,53 @@ export class SecretStore {
 
     return { apiKey };
   }
+
+  static async saveSecret(provider: string, apiKey: string): Promise<void> {
+    if (!apiKey) return;
+    const platformService = PlatformService.getInstance();
+    await platformService.ensureDirectories();
+    const current = this.readSecretFile();
+    current[provider.toLowerCase()] = this.encrypt(apiKey);
+    await platformService.atomicWriteFile(getGlobalSecretsPath(), JSON.stringify({ version: 1, entries: current }, null, 2), 0o600);
+  }
+
+  private static readSecret(provider: string): string {
+    const entry = this.readSecretFile()[provider.toLowerCase()] ?? this.readSecretFile()['sentinel'];
+    if (!entry) return '';
+    try { return this.decrypt(entry); } catch { return ''; }
+  }
+
+  private static readSecretFile(): Record<string, EncryptedSecret> {
+    try {
+      const parsed = JSON.parse(readFileSync(getGlobalSecretsPath(), 'utf8')) as { entries?: Record<string, EncryptedSecret> };
+      return parsed.entries ?? {};
+    } catch {
+      return {};
+    }
+  }
+
+  private static encrypt(value: string): EncryptedSecret {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', secretKey(), iv);
+    const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+    return { iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') };
+  }
+
+  private static decrypt(value: EncryptedSecret): string {
+    const decipher = createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(value.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(value.tag, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(value.ciphertext, 'base64')), decipher.final()]).toString('utf8');
+  }
+}
+
+interface EncryptedSecret {
+  readonly iv: string;
+  readonly tag: string;
+  readonly ciphertext: string;
+}
+
+function secretKey(): Buffer {
+  return createHash('sha256').update(`${homedir()}:${hostname()}:sentinel-secrets`).digest();
 }
 
 // ─── Configuration Resolver ──────────────────────────────────────
@@ -370,6 +512,9 @@ export class ConfigurationResolver {
 
     // Apply environment overrides (highest precedence)
     const finalConfig = applyEnvOverrides(parseResult.data);
+    if (!finalConfig.model.modelId && finalConfig.model.model) {
+      finalConfig.model.modelId = finalConfig.model.model;
+    }
     const secrets = SecretStore.resolveSecret(
       finalConfig.model.provider,
       globalSettings?.model?.apiKey,

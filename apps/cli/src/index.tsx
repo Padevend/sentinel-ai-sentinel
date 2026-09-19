@@ -19,13 +19,16 @@ import {
   getPlatformService,
   type ResolvedConfig,
   type SessionSummary,
+  type SessionId,
 } from '@sentinel/core';
-import { createProvider } from '@sentinel/llm';
+import { createProvider, ModelDiscovery } from '@sentinel/llm';
+import type { LLMProvider } from '@sentinel/llm';
 import { createDefaultToolRegistry } from '@sentinel/tools';
 import { PermissionManager } from '@sentinel/permissions';
-import { ProjectDetector, ProjectIdentityService, ProjectIndexer } from '@sentinel/project';
-import { ContextEngine } from '@sentinel/context';
+import { ProjectDetector, ProjectIdentityService, ProjectIndexer, StructuralTwinQuery } from "@sentinel/project";
+import { ContextEngine, FileContextEngine } from '@sentinel/context';
 import { MemoryEngine } from '@sentinel/memory';
+import { SkillsEngine } from '@sentinel/skills';
 import { SQLiteRepositories, SQLiteStorageAdapter } from '@sentinel/storage';
 import { AgentKernel, AgentSession, SessionManager } from '@sentinel/agent';
 import { App } from './App.js';
@@ -41,12 +44,16 @@ interface LauncherState {
   resumeNotice?: string;
   runtime?: {
     resolvedConfig: ResolvedConfig;
-    projectInfo: any;
+    projectInfo: import('@sentinel/core').ProjectInfo;
     kernel: AgentKernel;
+    permissions: PermissionManager;
     session: AgentSession;
     sessionManager: SessionManager;
     providerName: string;
     modelId: string;
+    provider: LLMProvider;
+    modelDiscovery: ModelDiscovery;
+    fileContext: FileContextEngine;
   };
 }
 
@@ -93,11 +100,25 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
       return;
     }
 
+    const resumeConfig = await loadConfig(projectRootPath);
+    const resumeProvider = createProvider(resumeConfig);
+    const resumeValidation = {
+      expectedProjectId: projectIdentity.id,
+      providerAvailable: async () => {
+        try {
+          await resumeProvider.listModels();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    };
+
     // 5. Handle --continue or --resume flags
     if (cliFlags.continueSession) {
       const latest = await sessionManager.getLatestResumableSession(projectIdentity.id);
       if (latest) {
-        const consistency = await sessionManager.checkConsistency(latest, projectRootPath);
+        const consistency = await sessionManager.checkConsistency(latest, projectRootPath, resumeValidation);
         const notice = consistency.warning
           ? `⚠ Notice: ${consistency.warning}`
           : `✓ Resuming previous session: "${latest.taskSummary || latest.id}"`;
@@ -107,9 +128,9 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
     }
 
     if (cliFlags.resumeSessionId) {
-      const target = await sessionManager.loadSession(cliFlags.resumeSessionId as any);
+      const target = await sessionManager.loadSession(cliFlags.resumeSessionId as SessionId);
       if (target) {
-        const consistency = await sessionManager.checkConsistency(target, projectRootPath);
+        const consistency = await sessionManager.checkConsistency(target, projectRootPath, resumeValidation);
         const notice = consistency.warning
           ? `⚠ Notice: ${consistency.warning}`
           : `✓ Resumed session ID: ${target.id}`;
@@ -133,7 +154,7 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
     const resolvedConfig = await loadConfig(projectRootPath);
     const newSession = await sessionManager.createSession({
       projectId: projectIdentity.id,
-      modelId: resolvedConfig.config.model.model,
+      modelId: resolvedConfig.config.model.modelId ?? resolvedConfig.config.model.model ?? '',
       providerName: resolvedConfig.config.model.provider,
     });
     await bootApp(newSession, sessionManager, repos);
@@ -156,12 +177,20 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
       scanResult.info,
       scanResult.files,
       scanResult.symbols,
+      new StructuralTwinQuery(scanResult.twin!),
     );
 
     const memoryEngine = new MemoryEngine(session.id, storage);
     const tools = createDefaultToolRegistry();
     const permissions = new PermissionManager(resolvedConfig.config.permissions);
     const provider = createProvider(resolvedConfig);
+    const skillsEngine = resolvedConfig.config.skills.enabled
+      ? new SkillsEngine({
+        projectRoot: projectRootPath,
+        projectDirectories: resolvedConfig.config.skills.directories,
+        enabledSkills: resolvedConfig.config.skills.enabledSkills,
+      })
+      : undefined;
 
     const kernel = new AgentKernel({
       projectRoot: projectRootPath,
@@ -171,6 +200,12 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
       contextEngine,
       memoryEngine,
       maxIterations: resolvedConfig.config.agent.maxIterations,
+      contextTokenBudget: Math.max(resolvedConfig.config.model.maxTokens ?? 3000, 3000),
+      maxTokens: resolvedConfig.config.model.maxTokens,
+      temperature: resolvedConfig.config.model.temperature,
+      reasoningEffort: resolvedConfig.config.model.reasoningEffort,
+      skillsEngine,
+      persistSession: async (currentSession) => sessionManager.saveSession(currentSession),
     });
 
     setState({
@@ -180,10 +215,14 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
         resolvedConfig,
         projectInfo: scanResult.info,
         kernel,
+        permissions,
         session,
         sessionManager,
         providerName: provider.name,
         modelId: provider.modelId,
+        provider,
+        modelDiscovery: new ModelDiscovery(),
+        fileContext: new FileContextEngine(projectRootPath),
       },
     });
   };
@@ -191,7 +230,7 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
   if (state.mode === 'loading') {
     return (
       <Box padding={1}>
-        <Text color="cyan">Starting Sentinel runtime...</Text>
+        <Text color="cyan">Starting Sentinel agent...</Text>
       </Box>
     );
   }
@@ -218,7 +257,16 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
           const sessionManager = new SessionManager(repos.sessions);
           const loaded = await sessionManager.loadSession(selectedSummary.id);
           if (loaded) {
-            await bootApp(loaded, sessionManager, repos, `✓ Resumed session: ${loaded.taskSummary || loaded.id}`);
+            const projectIdentity = await ProjectIdentityService.resolveIdentity(projectRootPath);
+            const config = await loadConfig(projectRootPath);
+            const provider = createProvider(config);
+            const consistency = await sessionManager.checkConsistency(loaded, projectRootPath, {
+              expectedProjectId: projectIdentity.id,
+              providerAvailable: async () => {
+                try { await provider.listModels(); return true; } catch { return false; }
+              },
+            });
+            await bootApp(loaded, sessionManager, repos, consistency.warning ?? `✓ Resumed session: ${loaded.taskSummary || loaded.id}`);
           }
         }}
         onCancel={async () => {
@@ -230,7 +278,7 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
           const resolvedConfig = await loadConfig(projectRootPath);
           const newSession = await sessionManager.createSession({
             projectId: projectIdentity.id,
-            modelId: resolvedConfig.config.model.model,
+            modelId: resolvedConfig.config.model.modelId ?? resolvedConfig.config.model.model ?? '',
             providerName: resolvedConfig.config.model.provider,
           });
           await bootApp(newSession, sessionManager, repos);
@@ -244,11 +292,15 @@ const RootLauncher: React.FC<RootLauncherProps> = ({ projectRootPath, cliFlags }
       <App
         projectInfo={state.runtime.projectInfo}
         kernel={state.runtime.kernel}
+        permissions={state.runtime.permissions}
         session={state.runtime.session}
         sessionManager={state.runtime.sessionManager}
         resolvedConfig={state.runtime.resolvedConfig}
         initialProviderName={state.runtime.providerName}
         initialModelId={state.runtime.modelId}
+        provider={state.runtime.provider}
+        modelDiscovery={state.runtime.modelDiscovery}
+        fileContextEngine={state.runtime.fileContext}
         initialMessage={state.resumeNotice}
       />
     );
@@ -299,7 +351,19 @@ INTERACTIVE COMMANDS:
   // 3. doctor
   if (args.includes('doctor')) {
     const projectRoot = (await ProjectDetector.detectRoot(process.cwd())).path;
-    const report = await DoctorEngine.diagnose(projectRoot);
+    let providerName: string | undefined;
+    let providerPing: (() => Promise<boolean>) | undefined;
+    try {
+      const config = await loadConfig(projectRoot);
+      const provider = createProvider(config);
+      providerName = provider.name;
+      providerPing = async () => {
+        try { await provider.listModels(); return true; } catch { return false; }
+      };
+    } catch {
+      // Doctor reports configuration/provider failures rather than aborting.
+    }
+    const report = await DoctorEngine.diagnose(projectRoot, { providerName, providerPing });
     console.log(DoctorEngine.formatReport(report));
     process.exit(report.hasErrors ? 1 : 0);
   }

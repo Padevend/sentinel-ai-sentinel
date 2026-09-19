@@ -35,7 +35,7 @@ const outDir = join(rootDir, 'dist');
 mkdirSync(outDir, { recursive: true });
 
 async function bundle() {
-  console.log('📦 Bundling Sentinel for production (ESM)...');
+  console.log('Bundling Sentinel for production (ESM)...');
 
   const buildFn = esbuild.build || esbuild.default?.build;
   if (!buildFn) {
@@ -48,7 +48,7 @@ async function bundle() {
     platform: 'node',
     target: 'node20',
     format: 'esm',
-    outfile: join(outDir, 'sentinel.js'),
+    outfile: join(outDir, 'sentinel.mjs'),
     banner: {
       js: [
         'import { createRequire as _topCreateRequire } from "node:module";',
@@ -59,6 +59,14 @@ async function bundle() {
     sourcemap: true,
     external: [
       'fsevents',
+      'ink',
+      'ink-text-input',
+      'ink-spinner',
+      'yoga-layout',
+      'react',
+      'react/*',
+      'chalk',
+      'typescript',
     ],
     plugins: [
       {
@@ -119,11 +127,11 @@ async function bundle() {
   });
 
   try {
-    chmodSync(join(outDir, 'sentinel.js'), 0o755);
+    chmodSync(join(outDir, 'sentinel.mjs'), 0o755);
   } catch {
     // Windows ignore
   }
-  console.log('✓ Successfully created dist/sentinel.js');
+  console.log('Successfully created dist/sentinel.mjs');
 }
 
 bundle().catch((err) => {

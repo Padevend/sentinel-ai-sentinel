@@ -19,6 +19,50 @@ import type {
 } from '@sentinel/core';
 import { SchemaMigrationRunner } from './migrations.js';
 
+interface ProjectRow {
+  readonly id: string;
+  readonly name: string;
+  readonly canonical_path: string;
+  readonly git_remote: string | null;
+  readonly created_at: number;
+  readonly last_seen_at: number;
+}
+
+interface WorkspaceRow {
+  readonly id: string;
+  readonly project_root: string;
+  readonly project_id: string;
+  readonly created_at: number;
+  readonly last_active_at: number;
+}
+
+interface SessionRow {
+  readonly id: string;
+  readonly project_id: string;
+  readonly workspace_id: string;
+  readonly status: string;
+  readonly created_at: number;
+  readonly updated_at: number;
+  readonly task_summary: string | null;
+  readonly model_id: string;
+  readonly provider_name: string;
+  readonly messages: string;
+  readonly state: string;
+  readonly checkpoints: string;
+  readonly files_modified: string;
+  readonly total_usage: string;
+}
+
+interface CheckpointRow {
+  readonly id: string;
+  readonly session_id: string;
+  readonly step_index: number;
+  readonly summary: string;
+  readonly state: string;
+  readonly files_modified: string;
+  readonly timestamp: number;
+}
+
 export class SQLiteRepositories {
   private readonly db: Database.Database;
 
@@ -80,7 +124,7 @@ class SQLiteProjectRepository implements ProjectRepository {
 
   async findById(id: ProjectId): Promise<ProjectIdentity | null> {
     const stmt = this.db.prepare('SELECT * FROM projects WHERE id = ?');
-    const row = stmt.get(id) as any;
+    const row = stmt.get(id) as ProjectRow | undefined;
     if (!row) return null;
     return {
       id: row.id as ProjectId,
@@ -94,7 +138,7 @@ class SQLiteProjectRepository implements ProjectRepository {
 
   async findByPath(path: string): Promise<ProjectIdentity | null> {
     const stmt = this.db.prepare('SELECT * FROM projects WHERE canonical_path = ?');
-    const row = stmt.get(path) as any;
+    const row = stmt.get(path) as ProjectRow | undefined;
     if (!row) return null;
     return {
       id: row.id as ProjectId,
@@ -108,7 +152,7 @@ class SQLiteProjectRepository implements ProjectRepository {
 
   async list(): Promise<ProjectIdentity[]> {
     const stmt = this.db.prepare('SELECT * FROM projects ORDER BY last_seen_at DESC');
-    const rows = stmt.all() as any[];
+    const rows = stmt.all() as ProjectRow[];
     return rows.map((row) => ({
       id: row.id as ProjectId,
       name: row.name,
@@ -151,7 +195,7 @@ class SQLiteWorkspaceRepository implements WorkspaceRepository {
 
   async findById(id: WorkspaceId): Promise<WorkspaceIdentity | null> {
     const stmt = this.db.prepare('SELECT * FROM workspaces WHERE id = ?');
-    const row = stmt.get(id) as any;
+    const row = stmt.get(id) as WorkspaceRow | undefined;
     if (!row) return null;
     return {
       id: row.id as WorkspaceId,
@@ -164,7 +208,7 @@ class SQLiteWorkspaceRepository implements WorkspaceRepository {
 
   async findByProjectRoot(root: string): Promise<WorkspaceIdentity | null> {
     const stmt = this.db.prepare('SELECT * FROM workspaces WHERE project_root = ?');
-    const row = stmt.get(root) as any;
+    const row = stmt.get(root) as WorkspaceRow | undefined;
     if (!row) return null;
     return {
       id: row.id as WorkspaceId,
@@ -234,14 +278,14 @@ class SQLiteSessionRepository implements SessionRepository {
 
   async findById(id: SessionId): Promise<StoredSession | null> {
     const stmt = this.db.prepare('SELECT * FROM sessions WHERE id = ?');
-    const row = stmt.get(id) as any;
+    const row = stmt.get(id) as SessionRow | undefined;
     if (!row) return null;
     return this.mapRowToSession(row);
   }
 
   async findLatestForProject(projectId: ProjectId, statuses?: SessionStatus[]): Promise<StoredSession | null> {
     let query = 'SELECT * FROM sessions WHERE project_id = ?';
-    const params: any[] = [projectId];
+    const params: unknown[] = [projectId];
 
     if (statuses && statuses.length > 0) {
       const placeholders = statuses.map(() => '?').join(',');
@@ -251,7 +295,7 @@ class SQLiteSessionRepository implements SessionRepository {
 
     query += ' ORDER BY updated_at DESC LIMIT 1';
     const stmt = this.db.prepare(query);
-    const row = stmt.get(...params) as any;
+    const row = stmt.get(...params) as SessionRow | undefined;
     if (!row) return null;
     return this.mapRowToSession(row);
   }
@@ -264,7 +308,7 @@ class SQLiteSessionRepository implements SessionRepository {
       ORDER BY updated_at DESC
       LIMIT ?
     `);
-    const rows = stmt.all(projectId, limit) as any[];
+    const rows = stmt.all(projectId, limit) as SessionRow[];
 
     return rows.map((row) => ({
       id: row.id as SessionId,
@@ -310,7 +354,7 @@ class SQLiteSessionRepository implements SessionRepository {
 
   async getCheckpoints(sessionId: SessionId): Promise<SessionCheckpoint[]> {
     const stmt = this.db.prepare('SELECT * FROM checkpoints WHERE session_id = ? ORDER BY step_index ASC');
-    const rows = stmt.all(sessionId) as any[];
+    const rows = stmt.all(sessionId) as CheckpointRow[];
     return rows.map((r) => ({
       id: r.id,
       sessionId: r.session_id as SessionId,
@@ -322,7 +366,7 @@ class SQLiteSessionRepository implements SessionRepository {
     }));
   }
 
-  private mapRowToSession(row: any): StoredSession {
+  private mapRowToSession(row: SessionRow): StoredSession {
     return {
       id: row.id as SessionId,
       projectId: row.project_id as ProjectId,
