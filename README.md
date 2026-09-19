@@ -11,12 +11,12 @@ Sentinel is an interactive software development agent designed to understand, na
 
 ### Linux & macOS
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribution/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Padevend/sentinel-ai-sentinel/main/distribution/install.sh | sh
 ```
 
 ### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/sentinel-ai/sentinel/main/distribution/install.ps1 | iex
+irm https://raw.githubusercontent.com/Padevend/sentinel-ai-sentinel/main/distribution/install.ps1 | iex
 ```
 
 ---

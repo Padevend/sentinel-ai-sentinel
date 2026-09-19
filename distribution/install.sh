@@ -12,7 +12,7 @@ YELLOW='\033[0;33m'
 RED='\033[0;31m'
 
 echo "${CYAN}${BOLD}"
-echo "  🛡️  SENTINEL — AI Software Engineering Agent"
+echo "      SENTINEL — AI Software Engineering Agent"
 echo "      Autonomous Architecture & Development Runtime"
 echo "${RESET}"
 
@@ -64,7 +64,7 @@ mkdir -p "$BIN_DIR" "$INSTALL_DIR/config" "$INSTALL_DIR/data" "$INSTALL_DIR/cach
 
 # 2. Determine Version and URLs
 VERSION="${SENTINEL_VERSION:-latest}"
-REPO="${SENTINEL_REPO:-sentinel-ai/sentinel}"
+REPO="${SENTINEL_REPO:-Padevend/sentinel-ai-sentinel}"
 
 if [ "$VERSION" = "latest" ]; then
   RELEASE_URL="https://github.com/$REPO/releases/latest/download"

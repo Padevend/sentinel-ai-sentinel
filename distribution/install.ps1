@@ -1,5 +1,4 @@
 # Sentinel installer for Windows PowerShell.
-# Usage: curl.exe -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/distribution/install.ps1 -o $env:TEMP\sentinel-install.ps1; powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\sentinel-install.ps1
 
 $ErrorActionPreference = 'Stop'
 
@@ -28,7 +27,7 @@ foreach ($directory in @(
 }
 
 $version = if ($env:SENTINEL_VERSION) { $env:SENTINEL_VERSION } else { 'latest' }
-$repo = if ($env:SENTINEL_REPO) { $env:SENTINEL_REPO } else { 'sentinel-ai/sentinel' }
+$repo = if ($env:SENTINEL_REPO) { $env:SENTINEL_REPO } else { 'Padevend/sentinel-ai-sentinel' }
 $releaseUrl = if ($version -eq 'latest') {
     "https://github.com/$repo/releases/latest/download"
 } else {

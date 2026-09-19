@@ -4,7 +4,7 @@ PackageVersion: 0.1.0
 PackageName: Sentinel
 Publisher: Sentinel AI
 License: MIT
-LicenseUrl: https://github.com/sentinel-ai/sentinel/blob/main/LICENSE
+LicenseUrl: https://github.com/Padevend/sentinel-ai-sentinel/blob/main/LICENSE
 ShortDescription: Autonomous AI Software Engineering Agent with Project Intelligence & Structural Analysis
 Moniker: sentinel
 Tags:
@@ -20,7 +20,7 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: sentinel.exe
         PortableCommandAlias: sentinel
-    InstallerUrl: https://github.com/sentinel-ai/sentinel/releases/download/v0.1.0/sentinel-windows-x64.zip
+    InstallerUrl: https://github.com/Padevend/sentinel-ai-sentinel/releases/download/v0.1.0/sentinel-windows-x64.zip
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 PackageLocale: en-US
 ManifestType: singleton
